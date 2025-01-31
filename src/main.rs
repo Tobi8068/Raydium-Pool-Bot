@@ -12,6 +12,7 @@ use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use serde::Deserialize;
 use std::env;
 use reqwest::Proxy;
+use dotenv::dotenv;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Pool {
@@ -188,9 +189,11 @@ async fn get_pool_price(
   pool_id: Option<&str>,
   mint: Option<&str>,
 ) -> Result<(f64, f64, f64)> {
-  let rpc_client =
-      RpcClient::new("https://mainnet.helius-rpc.com/?api-key=04ba92ee-df26-4a50-9a5e-e205988ff53d".to_string());
-  let client = Arc::new(rpc_client);
+    let rpc_url = env::var("RPC_URL")
+    .context("RPC_URL environment variable not set")?;
+  let rpc_client: RpcClient =
+      RpcClient::new(rpc_url.to_string());
+  let client: Arc<RpcClient> = Arc::new(rpc_client);
 
   let (amm_pool_id, pool_state) = get_pool_state(client.clone(), pool_id, mint).await?;
 
@@ -243,9 +246,12 @@ async fn get_pool_price(
 
 
 #[tokio::main]
-async fn main() {
-    match get_pool_price(Some("Bb5dXLex6oPhmsUs7BNAqrjv5bohCySgJpoCWHTdrWnu"), None).await {
+async fn main() -> Result<()> {
+    dotenv().ok();
+    let pool_id = env::var("TARGET_ADDRESS").context("TARGET_ADDRESS environment variable not set")?;
+    match get_pool_price(Some(&pool_id), None).await {
         Ok(result) => println!("Account Info: {:?}", result),
         Err(e) => eprintln!("Error fetching account info: {}", e),
-    }    
+    }
+    Ok(())
 }
