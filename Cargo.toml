@@ -1,9 +1,7 @@
 [package]
-name = "raytx"
+name = "Raydium_Pool_Track"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.53"
@@ -22,11 +20,22 @@ solana-sdk = "=1.16.27"
 solana-account-decoder = "=1.16.27"
 spl-token-client = "=0.7.1"
 amm-cli = { git = "https://github.com/raydium-io/raydium-library" }
+clmm-cli = { git = "https://github.com/raydium-io/raydium-library" }
+cpswap-cli = { git = "https://github.com/raydium-io/raydium-library" }
 common = { git = "https://github.com/raydium-io/raydium-library" }
 
 raydium_amm = { git = "https://github.com/raydium-io/raydium-amm", default-features = false, features = [
     "client",
 ] }
+raydium-amm-v3 = { git = "https://github.com/raydium-io/raydium-clmm", default-features = false, features = [
+    "client",
+] }
+raydium-cp-swap = { git = "https://github.com/raydium-io/raydium-cp-swap", default-features = false, features = [
+    "client",
+    "no-entrypoint",
+    "cpi",  
+    "devnet"
+] } 
 spl-token-2022 = { version = "0.9.0", features = ["no-entrypoint"] }
 spl-associated-token-account = { version = "2.2.0", features = [
     "no-entrypoint",
@@ -41,9 +50,12 @@ axum = { version = "0.7.5", features = ["macros"] }
 tower-http = { version = "0.5.2", features = ["cors"] }
 borsh = { version = "1.5.3" }
 borsh-derive = "1.5.3"
-bincode = "1.3.3"
 dotenv = "0.15.0"
-solana-program = "2.1.11"
+bs58 = "0.5.1"
+anchor-lang = "0.29.0"
+anchor-client = "0.29.0"
+arrayref = "0.3.7"
+
 
 [dev-dependencies]
 ctor = "0.2.8"

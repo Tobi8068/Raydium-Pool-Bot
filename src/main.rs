@@ -1,42 +1,43 @@
-use solana_client::rpc_client::RpcClient;
-use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
-use std::str::FromStr;
-use std::sync::Arc;
-use raydium_amm::state::{Loadable, AmmInfo};
+use amm_cli::AmmSwapInfoResult;
 use anyhow::{anyhow, Context, Result};
+use clap::ValueEnum;
 use common::common_utils;
+use dotenv::dotenv;
+use raydium_amm::state::{AmmInfo, Loadable};
+use reqwest::Proxy;
+use serde::Deserialize;
+use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
+use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_filter::{Memcmp, RpcFilterType};
+use solana_sdk::{
+    instruction::Instruction,
+    program_pack::Pack,
+    pubkey::Pubkey,
+    signature::Signature,
+    signer::{keypair::Keypair, Signer},
+    system_instruction,
+};
+use spl_associated_token_account::{
+    get_associated_token_address, instruction::create_associated_token_account,
+};
+use spl_token::ui_amount_to_amount;
 use spl_token_2022::{
     amount_to_ui_amount,
     extension::StateWithExtensionsOwned,
     state::{Account, Mint as TokenMint},
 };
-use tracing::debug;
-use solana_client::rpc_filter::{Memcmp, RpcFilterType};
-use serde::Deserialize;
-use std::env;
-use reqwest::Proxy;
-use solana_sdk::{
-    signer::{keypair::Keypair, Signer},
-    program_pack::Pack, 
-    pubkey::Pubkey,
-    system_instruction,
-    instruction::Instruction,
-    transaction::Transaction,
-    signature::Signature,
-};
-use clap::ValueEnum;
-use spl_associated_token_account::{
-    get_associated_token_address, 
-    instruction::create_associated_token_account
-};
 use spl_token_client::{
     client::{ProgramClient, ProgramRpcClient, ProgramRpcClientSendTransaction},
     token::{TokenError, TokenResult},
 };
-use tracing::{info, warn, error};
-use spl_token::ui_amount_to_amount;
-use amm_cli::AmmSwapInfoResult;
-use dotenv::dotenv;
+use std::env;
+use std::str::FromStr;
+use std::sync::Arc;
+use tracing::debug;
+use tracing::{error, info, warn};
+mod swap_functions;
+use swap_functions::swap_cpmm::swap_cpmm;
+use swap_functions::new_signed_and_send::*;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Pool {
@@ -59,6 +60,15 @@ pub struct PoolMint {
     pub decimals: u8,
 }
 
+#[derive(ValueEnum, Debug, Clone, Deserialize)]
+pub enum PoolType {
+    #[serde(rename = "amm")]
+    AMM,
+    #[serde(rename = "cpmm")]
+    CPMM,
+    #[serde(rename = "clmm")]
+    CLMM,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PoolData {
@@ -103,9 +113,9 @@ pub enum SwapInType {
     Pct,
 }
 
-pub fn get_wallet() -> Result<Arc<Keypair>> {
+pub fn get_wallet() -> Result<Keypair> {
     let wallet = Keypair::from_base58_string(&env::var("PRIVATE_KEY")?);
-    return Ok(Arc::new(wallet));
+    return Ok(wallet);
 }
 
 pub const AMM_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
@@ -115,12 +125,12 @@ async fn get_pool_state_by_mint(
     mint: &str,
 ) -> Result<(Pubkey, AmmInfo)> {
     debug!("finding pool state by mint: {}", mint);
-    
+
     // Define the expected size of AmmInfo
-    const AMM_INFO_SIZE: usize = 752;  // Fixed size for Raydium AMM v4
+    const AMM_INFO_SIZE: usize = 752; // Fixed size for Raydium AMM v4
     debug!("Expected AmmInfo size: {}", AMM_INFO_SIZE);
     debug!("AmmInfo struct size: {}", std::mem::size_of::<AmmInfo>());
-    
+
     // (pc_mint, coin_mint)
     let pairs = vec![
         // pump pool
@@ -173,8 +183,11 @@ async fn get_pool_state_by_mint(
             let pool = &pools[0];
             debug!("Found pool with ID: {}", pool.0);
             debug!("Actual account data size: {}", pool.1.data.len());
-            debug!("First few bytes of data: {:?}", &pool.1.data[..std::cmp::min(32, pool.1.data.len())]);
-            
+            debug!(
+                "First few bytes of data: {:?}",
+                &pool.1.data[..std::cmp::min(32, pool.1.data.len())]
+            );
+
             // Ensure the data length matches expected size
             if pool.1.data.len() != AMM_INFO_SIZE {
                 return Err(anyhow!(
@@ -183,13 +196,13 @@ async fn get_pool_state_by_mint(
                     pool.1.data.len()
                 ));
             }
-            
+
             // Try loading with detailed error handling
             match raydium_amm::state::AmmInfo::load_from_bytes(&pool.1.data) {
                 Ok(pool_state) => {
                     debug!("Successfully loaded AmmInfo");
                     Ok((pool.0, pool_state.clone()))
-                },
+                }
                 Err(e) => {
                     error!("Failed to load AmmInfo: {:?}", e);
                     error!("Data length: {}", pool.1.data.len());
@@ -241,7 +254,7 @@ async fn get_pool_state(
         let amm_pool_id = Pubkey::from_str(pool_id)?;
         let account_data = common::rpc::get_account(&rpc_client, &amm_pool_id)?
             .ok_or(anyhow!("NotFoundPool: pool state not found"))?;
-        
+
         // Check if we're dealing with a v4 or v3 pool
         let pool_state = if account_data.len() == 752 {
             // V4 pool
@@ -274,16 +287,19 @@ async fn get_pool_state(
                                 Some(pool) => {
                                     let amm_pool_id = Pubkey::from_str(&pool.id)?;
                                     debug!("Found pool via Raydium API: {}", amm_pool_id);
-                                    let account_data = common::rpc::get_account(&rpc_client, &amm_pool_id)?
-                                        .ok_or(anyhow!("NotFoundPool: pool state not found"))?;
-                                    
+                                    let account_data =
+                                        common::rpc::get_account(&rpc_client, &amm_pool_id)?
+                                            .ok_or(anyhow!("NotFoundPool: pool state not found"))?;
+
                                     // Apply the same version check here
                                     let pool_state = if account_data.len() == 752 {
                                         AmmInfo::load_from_bytes(&account_data)?.to_owned()
                                     } else if account_data.len() == 637 {
                                         let mut padded_data = vec![0u8; 752];
-                                        padded_data[..account_data.len()].copy_from_slice(&account_data);
-                                        let state = AmmInfo::load_from_bytes(&padded_data)?.to_owned();
+                                        padded_data[..account_data.len()]
+                                            .copy_from_slice(&account_data);
+                                        let state =
+                                            AmmInfo::load_from_bytes(&padded_data)?.to_owned();
                                         state
                                     } else {
                                         return Err(anyhow!(
@@ -291,13 +307,13 @@ async fn get_pool_state(
                                             account_data.len()
                                         ));
                                     };
-                                    
+
                                     Ok((amm_pool_id, pool_state))
-                                },
-                                None => Err(anyhow!("NotFoundPool: pool not found in raydium api"))
+                                }
+                                None => Err(anyhow!("NotFoundPool: pool not found in raydium api")),
                             }
-                        },
-                        Err(e) => Err(anyhow!("Failed to get pool info from Raydium API: {:?}", e))
+                        }
+                        Err(e) => Err(anyhow!("Failed to get pool info from Raydium API: {:?}", e)),
                     }
                 }
             }
@@ -307,70 +323,68 @@ async fn get_pool_state(
     }
 }
 
-async fn get_pool_price(
-  pool_id: Option<&str>,
-  mint: Option<&str>,
-) -> Result<(f64, f64, f64)> {
+async fn get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f64, f64, f64)> {
     println!("Get Pool Price ...");
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let rpc_client = RpcClient::new(rpc_url);
     let client = Arc::new(rpc_client);
 
-  let (amm_pool_id, pool_state) = get_pool_state(client.clone(), pool_id, mint).await?;
-  
-//   println!("pool_state : {:#?}", pool_state);
-  
-  let load_pubkeys = vec![pool_state.pc_vault, pool_state.coin_vault];
-  let rsps = common::rpc::get_multiple_accounts(&client, &load_pubkeys).unwrap();
-  
-  // Add proper error handling for vault accounts
-  let amm_pc_vault_account = rsps[0].clone()
-      .ok_or_else(|| anyhow!("Failed to fetch PC vault account"))?;
-  let amm_coin_vault_account = rsps[1].clone()
-      .ok_or_else(|| anyhow!("Failed to fetch coin vault account"))?;
-  
-  let amm_pc_vault = common_utils::unpack_token(&amm_pc_vault_account.data)
-      .map_err(|e| anyhow!("Failed to unpack PC vault token: {}", e))?;
-  let amm_coin_vault = common_utils::unpack_token(&amm_coin_vault_account.data)
-      .map_err(|e| anyhow!("Failed to unpack coin vault token: {}", e))?;
-  
-  let (base_account, quote_account) = if amm_coin_vault.base.is_native() {
-      (
-          (
-              pool_state.pc_vault_mint,
-              amount_to_ui_amount(amm_pc_vault.base.amount, pool_state.pc_decimals as u8),
-          ),
-          (
-              pool_state.coin_vault_mint,
-              amount_to_ui_amount(amm_coin_vault.base.amount, pool_state.coin_decimals as u8),
-          ),
-      )
-  } else {
-      (
-          (
-              pool_state.coin_vault_mint,
-              amount_to_ui_amount(amm_coin_vault.base.amount, pool_state.coin_decimals as u8),
-          ),
-          (
-              pool_state.pc_vault_mint,
-              amount_to_ui_amount(amm_pc_vault.base.amount, pool_state.pc_decimals as u8),
-          ),
-      )
-  };
+    let (amm_pool_id, pool_state) = get_pool_state(client.clone(), pool_id, mint).await?;
 
-  let price = quote_account.1 / base_account.1;
-  
-  println!(
-      "calculate pool[{}]: {}: {}, {}: {}, price: {} sol",
-      amm_pool_id, base_account.0, base_account.1, quote_account.0, quote_account.1, price
-  );
+    //   println!("pool_state : {:#?}", pool_state);
 
-  Ok((base_account.1, quote_account.1, price))
+    let load_pubkeys = vec![pool_state.pc_vault, pool_state.coin_vault];
+    let rsps = common::rpc::get_multiple_accounts(&client, &load_pubkeys).unwrap();
+
+    // Add proper error handling for vault accounts
+    let amm_pc_vault_account = rsps[0]
+        .clone()
+        .ok_or_else(|| anyhow!("Failed to fetch PC vault account"))?;
+    let amm_coin_vault_account = rsps[1]
+        .clone()
+        .ok_or_else(|| anyhow!("Failed to fetch coin vault account"))?;
+
+    let amm_pc_vault = common_utils::unpack_token(&amm_pc_vault_account.data)
+        .map_err(|e| anyhow!("Failed to unpack PC vault token: {}", e))?;
+    let amm_coin_vault = common_utils::unpack_token(&amm_coin_vault_account.data)
+        .map_err(|e| anyhow!("Failed to unpack coin vault token: {}", e))?;
+
+    let (base_account, quote_account) = if amm_coin_vault.base.is_native() {
+        (
+            (
+                pool_state.pc_vault_mint,
+                amount_to_ui_amount(amm_pc_vault.base.amount, pool_state.pc_decimals as u8),
+            ),
+            (
+                pool_state.coin_vault_mint,
+                amount_to_ui_amount(amm_coin_vault.base.amount, pool_state.coin_decimals as u8),
+            ),
+        )
+    } else {
+        (
+            (
+                pool_state.coin_vault_mint,
+                amount_to_ui_amount(amm_coin_vault.base.amount, pool_state.coin_decimals as u8),
+            ),
+            (
+                pool_state.pc_vault_mint,
+                amount_to_ui_amount(amm_pc_vault.base.amount, pool_state.pc_decimals as u8),
+            ),
+        )
+    };
+
+    let price = quote_account.1 / base_account.1;
+
+    println!(
+        "calculate pool[{}]: {}: {}, {}: {}, price: {} sol",
+        amm_pool_id, base_account.0, base_account.1, quote_account.0, quote_account.1, price
+    );
+
+    Ok((base_account.1, quote_account.1, price))
 }
 
 async fn get_account_info(
     client: Arc<NonblockingRpcClient>,
-    _keypair: Arc<Keypair>,
     address: &Pubkey,
     account: &Pubkey,
 ) -> TokenResult<StateWithExtensionsOwned<Account>> {
@@ -398,7 +412,6 @@ async fn get_account_info(
 
 async fn get_mint_info(
     client: Arc<NonblockingRpcClient>,
-    _keypair: Arc<Keypair>,
     address: &Pubkey,
 ) -> TokenResult<StateWithExtensionsOwned<TokenMint>> {
     let program_client = Arc::new(ProgramRpcClient::new(
@@ -416,7 +429,8 @@ async fn get_mint_info(
         return Err(TokenError::AccountInvalidOwner);
     }
 
-    let mint_result = StateWithExtensionsOwned::<TokenMint>::unpack(account.data).map_err(Into::into);
+    let mint_result =
+        StateWithExtensionsOwned::<TokenMint>::unpack(account.data).map_err(Into::into);
     let decimals: Option<u8> = None;
     if let (Ok(mint), Some(decimals)) = (&mint_result, decimals) {
         if decimals != mint.base.decimals {
@@ -486,101 +500,105 @@ fn amm_swap(
     Ok(swap_instruction)
 }
 
-fn get_unit_price() -> u64 {
-    env::var("UNIT_PRICE")
-        .ok()
-        .and_then(|v| u64::from_str(&v).ok())
-        .unwrap_or(20000)
-}
+async fn get_pool_type(client: &RpcClient, pool_id: &str) -> Result<PoolType> {
+    let pool_pubkey = Pubkey::from_str(pool_id)?;
+    let account = client.get_account(&pool_pubkey)?;
 
-fn get_unit_limit() -> u32 {
-    env::var("UNIT_LIMIT")
-        .ok()
-        .and_then(|v| u32::from_str(&v).ok())
-        .unwrap_or(200_000)
-}
-
-async fn new_signed_and_send(
-    client: &RpcClient,
-    keypair: &Keypair,
-    mut instructions: Vec<Instruction>,
-    use_jito: bool,
-) -> Result<Vec<String>> {
-    let unit_limit = get_unit_limit();
-    let unit_price = get_unit_price();
-    // If not using Jito, manually set the compute unit price and limit
-    if !use_jito {
-        let modify_compute_units =
-            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
-                unit_limit,
-            );
-        let add_priority_fee =
-            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(
-                unit_price,
-            );
-        instructions.insert(0, modify_compute_units);
-        instructions.insert(1, add_priority_fee);
-    }
-    // send init tx
-    let recent_blockhash = client.get_latest_blockhash()?;
-    let txn = Transaction::new_signed_with_payer(
-        &instructions,
-        Some(&keypair.pubkey()),
-        &vec![&*keypair],
-        recent_blockhash,
-    );
-
-    if env::var("TX_SIMULATE").ok() == Some("true".to_string()) {
-        let simulate_result = client.simulate_transaction(&txn)?;
-        if let Some(logs) = simulate_result.value.logs {
-            for log in logs {
-                info!("{}", log);
-            }
-        }
-        return match simulate_result.value.err {
-            Some(err) => Err(anyhow!("{}", err)),
-            None => Ok(vec![]),
-        };
-    }
-
-    if use_jito {
-        // jito implementation placeholder
-        Ok(vec![])
-    } else {
-        let sig = common::rpc::send_txn(&client, &txn, true)?;
-        info!("signature: {:?}", sig);
-        Ok(vec![sig.to_string()])
+    // Check program ID to determine pool type
+    match account.owner.to_string().as_str() {
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" => Ok(PoolType::AMM), // Raydium AMM
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" => Ok(PoolType::CLMM), // Orca Whirlpools
+        "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" => Ok(PoolType::CPMM), // Orca CPMM
+        _ => Err(anyhow!(
+            "Unknown pool type for program ID: {}",
+            account.owner
+        )),
     }
 }
 
 async fn swap(
     pool_id: Option<&str>,
-    keypair: Arc<Keypair>,
+    keypair: Keypair,
     mint_str: &str,
     amount_in: f64,
     swap_direction: SwapDirection,
     in_type: SwapInType,
     slippage: u64,
     use_jito: bool,
+    pool_type: PoolType,
 ) -> Result<Vec<String>> {
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     // Create both blocking and non-blocking clients
     let blocking_client = Arc::new(RpcClient::new(rpc_url.clone()));
     let nonblocking_client = Arc::new(NonblockingRpcClient::new(rpc_url));
-    
+
+    match pool_type {
+        PoolType::AMM => {
+            swap_amm(
+                pool_id,
+                keypair,
+                mint_str,
+                amount_in,
+                swap_direction,
+                in_type,
+                slippage,
+                use_jito,
+                blocking_client,
+                nonblocking_client,
+            )
+            .await
+        }
+        PoolType::CPMM => {
+            swap_cpmm(
+                pool_id,
+                keypair,
+                mint_str,
+                slippage,
+                use_jito,
+                blocking_client,
+                nonblocking_client,
+            )
+            .await
+        }
+        PoolType::CLMM => {
+            swap_clmm(
+                pool_id,
+                keypair,
+                mint_str,
+                amount_in,
+                swap_direction,
+                in_type,
+                slippage,
+                use_jito,
+                blocking_client,
+                nonblocking_client,
+            )
+            .await
+        }
+    }
+}
+
+async fn swap_amm(
+    pool_id: Option<&str>,
+    keypair: Keypair,
+    mint_str: &str,
+    amount_in: f64,
+    swap_direction: SwapDirection,
+    in_type: SwapInType,
+    slippage: u64,
+    use_jito: bool,
+    blocking_client: Arc<RpcClient>,
+    nonblocking_client: Arc<NonblockingRpcClient>,
+) -> Result<Vec<String>> {
     // Use nonblocking_client for async operations
-    let (amm_pool_id, pool_state) = get_pool_state(
-        blocking_client.clone(),
-        pool_id,
-        Some(mint_str),
-    )
-    .await?;
+    let (amm_pool_id, pool_state) =
+        get_pool_state(blocking_client.clone(), pool_id, Some(mint_str)).await?;
 
     // Use blocking_client for synchronous operations
     let slippage_bps = slippage * 100;
     let owner = keypair.pubkey();
-    let mint = Pubkey::from_str(mint_str)
-        .map_err(|e| anyhow!("failed to parse mint pubkey: {}", e))?;
+    let mint =
+        Pubkey::from_str(mint_str).map_err(|e| anyhow!("failed to parse mint pubkey: {}", e))?;
     let program_id = spl_token::ID;
     let native_mint = spl_token::native_mint::ID;
 
@@ -607,7 +625,6 @@ async fn swap(
             // Create base ATA if it doesn't exist.
             match get_account_info(
                 nonblocking_client.clone(),
-                keypair.clone(),
                 &token_out,
                 &out_ata,
             )
@@ -619,13 +636,6 @@ async fn swap(
                         "base ATA for mint {} does not exist. will be create",
                         token_out
                     );
-                    // token::create_associated_token_account(
-                    //     self.client.clone(),
-                    //     self.keypair.clone(),
-                    //     &token_out,
-                    //     &owner,
-                    // )
-                    // .await?;
                     create_instruction = Some(create_associated_token_account(
                         &owner,
                         &owner,
@@ -644,14 +654,12 @@ async fn swap(
         SwapDirection::Sell => {
             let in_account = get_account_info(
                 nonblocking_client.clone(),
-                keypair.clone(),
                 &token_in,
                 &in_ata,
             )
             .await?;
             let in_mint =
-                get_mint_info(nonblocking_client.clone(), keypair.clone(), &token_in)
-                    .await?;
+                get_mint_info(nonblocking_client.clone(), &token_in).await?;
             let amount = match in_type {
                 SwapInType::Qty => ui_amount_to_amount(amount_in, in_mint.base.decimals),
                 SwapInType::Pct => {
@@ -702,7 +710,7 @@ async fn swap(
         token_in, amount_ui_pretty, token_out
     );
     // build instructions
-    let mut instructions = vec![];
+    let mut instructions: Vec<Instruction> = vec![];
     // sol <-> wsol support
     let mut wsol_account = None;
     if token_in == native_mint || token_out == native_mint {
@@ -713,8 +721,7 @@ async fn swap(
 
         // LAMPORTS_PER_SOL / 100 // 0.01 SOL as rent
         // get rent
-        let rent = 
-            nonblocking_client
+        let rent = nonblocking_client
             .get_minimum_balance_for_rent_exemption(Account::LEN)
             .await?;
         // if buy add amount_specified
@@ -801,18 +808,48 @@ async fn swap(
     new_signed_and_send(&blocking_client, &keypair, instructions, use_jito).await
 }
 
+async fn swap_clmm(
+    _pool_id: Option<&str>,
+    keypair: Keypair,
+    _mint_str: &str,
+    _amount_in: f64,
+    _swap_direction: SwapDirection,
+    _in_type: SwapInType,
+    _slippage: u64,
+    use_jito: bool,
+    blocking_client: Arc<RpcClient>,
+    _nonblocking_client: Arc<NonblockingRpcClient>,
+) -> Result<Vec<String>> {
+    // Implement Orca Whirlpool (CLMM) swap logic
+
+    // Build CLMM swap instruction
+    let mut instructions = vec![];
+
+    // Add CLMM-specific compute budget instructions
+    let modify_compute_units =
+        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(600_000);
+    let add_priority_fee =
+        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(
+            get_unit_price(),
+        );
+    instructions.push(modify_compute_units);
+    instructions.push(add_priority_fee);
+
+    new_signed_and_send(&blocking_client, &keypair, instructions, use_jito).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
-    let pool_id = env::var("TARGET_ADDRESS").context("TARGET_ADDRESS environment variable not set")?;
-    let target_price = env::var("TARGET_PRICE")
-        .context("TARGET_PRICE environment variable not set")?
-        .parse::<f64>()
-        .context("Failed to parse TARGET_PRICE as f64")?;
-    
-    let swap_amount = 1.0;  // 100% of tokens
+    let pool_id =
+        env::var("TARGET_ADDRESS").context("TARGET_ADDRESS environment variable not set")?;
+
+    let swap_amount = 1.0; // 100% of tokens
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let rpc_client = Arc::new(RpcClient::new(rpc_url));
+    let pool_type = get_pool_type(&rpc_client, &pool_id).await?;
+
+    println!("{:?}", pool_type);
 
     let wallet = get_wallet()?;
     let mint = env::var("MINT_ADDRESS")?;
@@ -820,17 +857,20 @@ async fn main() -> Result<()> {
     loop {
         match swap(
             Some(&pool_id),
-            wallet.clone(),
+            wallet.insecure_clone(),
             &mint,
             swap_amount,
             SwapDirection::Sell,
             SwapInType::Pct,
             10,
-            false
-        ).await {
+            false,
+            pool_type.clone(),
+        )
+        .await
+        {
             Ok(signatures) => {
                 println!("Swap initiated. Waiting for confirmation...");
-                
+
                 // Wait for each transaction to confirm
                 for signature in signatures {
                     let sig = Signature::from_str(&signature)?;
@@ -838,9 +878,15 @@ async fn main() -> Result<()> {
                         match rpc_client.get_signature_status(&sig) {
                             Ok(status) => {
                                 if status.is_none() {
-                                    println!("Swap transaction {} confirmed successfully!", signature);
+                                    println!(
+                                        "Swap transaction {} confirmed successfully!",
+                                        signature
+                                    );
                                 } else {
-                                    error!("Swap transaction {} failed with error: {:?}", signature, status);
+                                    error!(
+                                        "Swap transaction {} failed with error: {:?}",
+                                        signature, status
+                                    );
                                     continue;
                                 }
                             }
@@ -854,16 +900,20 @@ async fn main() -> Result<()> {
                         continue;
                     }
                 }
-                
+
                 // Optional: Verify the token balance is now 0
-                let token_ata = get_associated_token_address(&wallet.pubkey(), &Pubkey::from_str(&mint)?);
+                let token_ata =
+                    get_associated_token_address(&wallet.pubkey(), &Pubkey::from_str(&mint)?);
                 match rpc_client.get_token_account_balance(&token_ata) {
                     Ok(balance) => {
                         if balance.amount == "0" {
                             println!("Swap completed successfully! Token balance is now 0");
-                            break;  // Exit the monitoring loop
+                            break; // Exit the monitoring loop
                         } else {
-                            println!("Warning: Token balance is not 0 after swap: {}", balance.amount);
+                            println!(
+                                "Warning: Token balance is not 0 after swap: {}",
+                                balance.amount
+                            );
                         }
                     }
                     Err(e) => {
@@ -878,10 +928,10 @@ async fn main() -> Result<()> {
         // match get_pool_price(Some(&pool_id), None).await {
         //     Ok((_base_amount, _quote_amount, current_price)) => {
         //         println!("Current price: {} SOL", current_price);
-                
+
         //         if current_price > target_price {
         //             println!("Price threshold reached! Initiating swap of all tokens to SOL...");
-                    
+
         //         }
         //     }
         //     Err(e) => eprintln!("Error fetching pool price: {}", e),
@@ -889,6 +939,6 @@ async fn main() -> Result<()> {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
-    
+
     Ok(())
 }
