@@ -323,7 +323,7 @@ async fn get_pool_state(
     }
 }
 
-async fn get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f64, f64, f64)> {
+async fn _get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f64, f64, f64)> {
     println!("Get Pool Price ...");
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let rpc_client = RpcClient::new(rpc_url);
@@ -862,7 +862,7 @@ async fn main() -> Result<()> {
             swap_amount,
             SwapDirection::Sell,
             SwapInType::Pct,
-            10,
+            40,
             false,
             pool_type.clone(),
         )

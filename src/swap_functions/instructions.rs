@@ -4,24 +4,18 @@ use solana_sdk::{
     signature::Keypair,
 };
 use anyhow::Result;
-use std::{env, rc::Rc, sync::Arc, str::FromStr};
-use anchor_client::{Client, Cluster};
+use std::{rc::Rc, sync::Arc, str::FromStr};
+use anchor_client::Client;
 use raydium_cp_swap::AUTH_SEED;
 use raydium_cp_swap::accounts as raydium_cp_accounts;
 use raydium_cp_swap::instruction as raydium_cp_instructions;
 
-pub fn create_ata_token_account_instr(
-    keypair: Keypair,
+pub async fn create_ata_token_account_instr(
+    client: &Client<Arc<Keypair>>,
     token_program: Pubkey,
     mint: &Pubkey,
     owner: &Pubkey,
 ) -> Result<Vec<Instruction>> {
-    let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
-    let ws_url = "wss://api.mainnet-beta.solana.com/";
-    let url = Cluster::Custom(rpc_url, ws_url.to_string());
-    // Client.
-    let keypair_arc = Arc::new(keypair);
-    let client = Client::new(url, keypair_arc.clone());
     let program = client.program(token_program)?;
     let instructions = program
         .request()
@@ -38,7 +32,7 @@ pub fn create_ata_token_account_instr(
 }
 
 pub fn swap_base_output_instr(
-    keypair: Keypair,
+    client: &Client<Arc<Keypair>>,
     pool_id: Pubkey,
     amm_config: Pubkey,
     observation_account: Pubkey,
@@ -53,11 +47,6 @@ pub fn swap_base_output_instr(
     max_amount_in: u64,
     amount_out: u64,
 ) -> Result<Vec<Instruction>> {
-    let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
-    let ws_url = "wss://api.mainnet-beta.solana.com/";
-    let url = Cluster::Custom(rpc_url, ws_url.to_string());
-    // Client.
-    let client = Client::new(url, Rc::new(keypair));
     let program_id_str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
     let program_id = Pubkey::from_str(program_id_str)?;
     let program = client.program(program_id)?;
