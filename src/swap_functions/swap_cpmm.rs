@@ -26,7 +26,7 @@ pub async fn swap_cpmm(
     pool_id: Option<&str>,
     keypair: Keypair,
     mint_str: &str,
-    slippage: u64,
+    _slippage: u64,
     use_jito: bool,
     blocking_client: Arc<RpcClient>,
     nonblocking_client: Arc<NonblockingRpcClient>,
@@ -47,7 +47,6 @@ pub async fn swap_cpmm(
     }
     // Use the entire token balance
     let amount_raw = token_balance;
-    let max_amount_in = amount_raw - (amount_raw * slippage as u64) / 100;
 
     // Calculate minimum amount out (you may want to adjust this based on your requirements)
     let _amount_out = amount_raw; // This should ideally be calculated based on pool state and price impact
