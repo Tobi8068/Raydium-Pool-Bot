@@ -37,7 +37,6 @@ pub async fn swap_cpmm(
 
     // Get token account balance
     let token_ata = get_associated_token_address(&owner, &mint);
-    println!("TokenAccount=>>>>>>>>>>>>> {:?}", &token_ata);
     let token_balance = blocking_client
         .get_token_account_balance(&token_ata)?
         .amount
@@ -49,7 +48,6 @@ pub async fn swap_cpmm(
     // Use the entire token balance
     let amount_raw = token_balance;
     let max_amount_in = amount_raw - (amount_raw * slippage as u64) / 100;
-    println!("{} {} {}", r"----".repeat(5), max_amount_in, amount_raw);
 
     // Calculate minimum amount out (you may want to adjust this based on your requirements)
     let _amount_out = amount_raw; // This should ideally be calculated based on pool state and price impact
@@ -80,14 +78,10 @@ pub async fn swap_cpmm(
                 token_ata.clone(),   
             ];
 
-            // println!("MintKey:  {:?}\n", load_pubkeys);
-
             let rsps = blocking_client.get_multiple_accounts(&load_pubkeys)?;
             let epoch = blocking_client.get_epoch_info().unwrap().epoch;
             let [amm_config_account, token_0_vault_account, token_1_vault_account, token_0_mint_account, token_1_mint_account, user_input_token_account] =
                 array_ref![rsps, 0, 6];
-
-            // println!("User Input token: {:?} {:?}", user_input_token_account, token_0_vault_account);
 
             // docode account
             let mut token_0_vault_data = token_0_vault_account.clone().unwrap().data;
@@ -99,11 +93,6 @@ pub async fn swap_cpmm(
                 amm_config_account.as_ref().unwrap(),
             )?;
 
-
-            // eprintln!("Token Data: >>>>>>>>>>>>>>, {:?}", &token_0_vault_account);
-            
-            // println!("Debugging step1 ... ");
-            
             let token_0_vault_info = StateWithExtensionsMut::<Account>::unpack(&mut token_0_vault_data)?;
             let token_1_vault_info = StateWithExtensionsMut::<Account>::unpack(&mut token_1_vault_data)?;
             let token_0_mint_info = StateWithExtensionsMut::<Mint>::unpack(&mut token_0_mint_data)?;
@@ -137,7 +126,6 @@ pub async fn swap_cpmm(
                         output_token_program,
                         out_transfer_fee,
                     ) = if user_input_token_info.base.mint == token_0_vault_info.base.mint {
-                        // println!(">>>>>>>>>>>>>>>>>>>>ZeroForOne>>>>>>>>>>>>>>>>>>>>>>");
                         (
                             raydium_cp_swap::curve::TradeDirection::ZeroForOne,
                             total_token_0_amount,
@@ -157,8 +145,6 @@ pub async fn swap_cpmm(
                             get_transfer_inverse_fee(&token_1_mint_info, epoch, amount_out_less_fee),
                         )
                     } else {
-                        // println!(">>>>>>>>>>>>>>>>>>>>OneForZero>>>>>>>>>>>>>>>>>>>>>>");
-
                         (
                             raydium_cp_swap::curve::TradeDirection::OneForZero,
                             total_token_1_amount,
@@ -179,8 +165,6 @@ pub async fn swap_cpmm(
                         )
                     };
 
-                    // println!("Out token>>>>>>>>>>>>>>>{:?}", &user_output_token);
-                    
                     let actual_amount_out = amount_out_less_fee.checked_add(out_transfer_fee).unwrap();
         
                     let result = raydium_cp_swap::curve::CurveCalculator::swap_base_output(
@@ -265,7 +249,6 @@ pub async fn swap_cpmm(
                         .instructions()?;
                     instructions.extend(swap_base_in_instr);
                     let in_ata = get_associated_token_address(&keypair_arc.clone().pubkey(), &input_token_mint);
-                    println!("Debugging step6 ...");
                     let close_wsol_account_instruction = Some(spl_token::instruction::close_account(
                         &spl_token::ID,
                         &wsol_pubkey,
@@ -274,7 +257,6 @@ pub async fn swap_cpmm(
                         &vec![&keypair_arc.clone().pubkey()],
                     )?);
                     if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
-                        println!("Close WSOl added");
                         instructions.push(close_wsol_account_instruction);
                     }
                     let close_instruction = Some(spl_token::instruction::close_account(
@@ -285,13 +267,11 @@ pub async fn swap_cpmm(
                         &vec![&keypair_arc.clone().pubkey()],
                     )?);
                     if let Some(close_instruction) = close_instruction {
-                        println!("Close added");
                         instructions.push(close_instruction);
                     }
                     new_signed_and_send(&blocking_client, &keypair_arc.clone(), instructions, use_jito).await
                 },
                 Err(e) => {
-                    eprintln!("Error unpacking user input token account: {:?}", e);
                     return Err(anyhow!("Failed to unpack user input token account: {}", e));
                 }
             }

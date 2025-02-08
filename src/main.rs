@@ -274,7 +274,6 @@ async fn get_pool_state(
 
         Ok((amm_pool_id, pool_state))
     } else {
-        println!("Debugging ... false");
         if let Some(mint) = mint {
             // Try both methods with better error handling
             match get_pool_state_by_mint(rpc_client.clone(), mint).await {
@@ -324,15 +323,12 @@ async fn get_pool_state(
     }
 }
 
-async fn _get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f64, f64, f64)> {
-    println!("Get Pool Price ...");
+async fn get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f64, f64, f64)> {
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let rpc_client = RpcClient::new(rpc_url);
     let client = Arc::new(rpc_client);
 
-    let (amm_pool_id, pool_state) = get_pool_state(client.clone(), pool_id, mint).await?;
-
-    //   println!("pool_state : {:#?}", pool_state);
+    let (_amm_pool_id, pool_state) = get_pool_state(client.clone(), pool_id, mint).await?;
 
     let load_pubkeys = vec![pool_state.pc_vault, pool_state.coin_vault];
     let rsps = common::rpc::get_multiple_accounts(&client, &load_pubkeys).unwrap();
@@ -375,11 +371,6 @@ async fn _get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f
     };
 
     let price = quote_account.1 / base_account.1;
-
-    println!(
-        "calculate pool[{}]: {}: {}, {}: {}, price: {} sol",
-        amm_pool_id, base_account.0, base_account.1, quote_account.0, quote_account.1, price
-    );
 
     Ok((base_account.1, quote_account.1, price))
 }
@@ -776,7 +767,6 @@ async fn swap_amm(
         }
 
         // build swap instruction
-        println!("Out amount -----------------> {:?}", other_amount_threshold);
         let build_swap_instruction = amm_swap(
             &amm_program,
             swap_info_result,
@@ -812,10 +802,13 @@ async fn main() -> Result<()> {
     dotenv().ok();
     let pool_id =
         env::var("TARGET_ADDRESS").context("TARGET_ADDRESS environment variable not set")?;
-
+    let target_price_str =
+        env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
+    let target_price: f64 = target_price_str  
+        .parse::<f64>()  
+        .context("Failed to parse TARGET_PRICE as f64")?; 
     let swap_amount = 1.0; // 100% of tokens
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
-    let slippage = env::var("SLIPPAGE").expect("SLIPPAGE environment variable not set").parse().expect("SLIPPAGE must be a valid f64");
     let rpc_client = Arc::new(RpcClient::new(rpc_url));
     let pool_type = get_pool_type(&rpc_client, &pool_id).await?;
 
@@ -824,91 +817,103 @@ async fn main() -> Result<()> {
     let wallet = get_wallet()?;
     let mint = env::var("MINT_ADDRESS")?;
 
-    loop {
-        match swap(
-            Some(&pool_id),
-            wallet.insecure_clone(),
-            &mint,
-            swap_amount,
-            SwapDirection::Sell,
-            SwapInType::Pct,
-            slippage,
-            false,
-            pool_type.clone(),
-        )
-        .await
-        {
-            Ok(signatures) => {
-                println!("Swap initiated. Waiting for confirmation...");
+    let mut pool_price = 0.0 as f64;
 
-                // Wait for each transaction to confirm
-                for signature in signatures {
-                    let sig = Signature::from_str(&signature)?;
-                    if rpc_client.confirm_transaction(&sig)? {
-                        match rpc_client.get_signature_status(&sig) {
-                            Ok(status) => {
-                                if status.is_none() {
-                                    println!(
-                                        "Swap transaction {} confirmed successfully!",
-                                        signature
-                                    );
-                                } else {
-                                    error!(
-                                        "Swap transaction {} failed with error: {:?}",
-                                        signature, status
-                                    );
+    loop {
+        match pool_type {
+            PoolType::AMM => {
+                println!("Get Pool Price AMM ...");
+                match get_pool_price(Some(&pool_id), None).await {
+                    Ok((_base_amount, _quote_amount, current_price)) => {
+                        println!("Current price AMM: {} SOL", current_price);
+                        pool_price = current_price;
+                    }
+                    Err(e) => eprintln!("Error fetching pool price: {}", e),
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+            PoolType::CPMM => {
+                println!("Get Pool Price CPMM ...");
+            }
+            PoolType::CLMM => {
+                println!("Get Pool Price CLMM ...");
+            }
+        }
+        if pool_price > target_price {
+            match swap(
+                Some(&pool_id),
+                wallet.insecure_clone(),
+                &mint,
+                swap_amount,
+                SwapDirection::Sell,
+                SwapInType::Pct,
+                30,
+                false,
+                pool_type.clone(),
+            )
+            .await
+            {
+                Ok(signatures) => {
+                    println!("Swap initiated. Waiting for confirmation...");
+    
+                    // Wait for each transaction to confirm
+                    for signature in signatures {
+                        let sig = Signature::from_str(&signature)?;
+                        if rpc_client.confirm_transaction(&sig)? {
+                            match rpc_client.get_signature_status(&sig) {
+                                Ok(status) => {
+                                    if status.is_none() {
+                                        println!(
+                                            "Swap transaction {} confirmed successfully!",
+                                            signature
+                                        );
+                                    } else {
+                                        error!(
+                                            "Swap transaction {} failed with error: {:?}",
+                                            signature, status
+                                        );
+                                        continue;
+                                    }
+                                }
+                                _ => {
+                                    error!("Failed to get transaction status for {}", signature);
                                     continue;
                                 }
                             }
-                            _ => {
-                                error!("Failed to get transaction status for {}", signature);
-                                continue;
+                        } else {
+                            error!("Failed to confirm transaction {}", signature);
+                            continue;
+                        }
+                    }
+    
+                    // Optional: Verify the token balance is now 0
+                    let token_ata =
+                        get_associated_token_address(&wallet.pubkey(), &Pubkey::from_str(&mint)?);
+                    match rpc_client.get_token_account_balance(&token_ata) {
+                        Ok(balance) => {
+                            if balance.amount == "0" {
+                                println!("Swap completed successfully! Token balance is now 0");
+                                break; // Exit the monitoring loop
+                            } else {
+                                println!(
+                                    "Warning: Token balance is not 0 after swap: {}",
+                                    balance.amount
+                                );
                             }
                         }
-                    } else {
-                        error!("Failed to confirm transaction {}", signature);
-                        continue;
-                    }
-                }
-
-                // Optional: Verify the token balance is now 0
-                let token_ata =
-                    get_associated_token_address(&wallet.pubkey(), &Pubkey::from_str(&mint)?);
-                match rpc_client.get_token_account_balance(&token_ata) {
-                    Ok(balance) => {
-                        if balance.amount == "0" {
-                            println!("Swap completed successfully! Token balance is now 0");
-                            break; // Exit the monitoring loop
-                        } else {
-                            println!(
-                                "Warning: Token balance is not 0 after swap: {}",
-                                balance.amount
-                            );
+                        Err(e) => {
+                            error!("Failed to check final token balance: {}", e);
                         }
                     }
-                    Err(e) => {
-                        error!("Failed to check final token balance: {}", e);
-                    }
+                }
+                Err(e) => {
+                    error!("Failed to initiate swap: {}", e);
                 }
             }
-            Err(e) => {
-                error!("Failed to initiate swap: {}", e);
-            }
+            pool_price = 0.0;
+        } else {
+            // println!("Current pool price is lower than target price");
         }
-        // match get_pool_price(Some(&pool_id), None).await {
-        //     Ok((_base_amount, _quote_amount, current_price)) => {
-        //         println!("Current price: {} SOL", current_price);
-
-        //         if current_price > target_price {
-        //             println!("Price threshold reached! Initiating swap of all tokens to SOL...");
-
-        //         }
-        //     }
-        //     Err(e) => eprintln!("Error fetching pool price: {}", e),
-        // }
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
-
     Ok(())
 }
