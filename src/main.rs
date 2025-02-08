@@ -778,6 +778,7 @@ async fn swap_amm(
         }
 
         // build swap instruction
+        println!("Out amount -----------------> {:?}", other_amount_threshold);
         let build_swap_instruction = amm_swap(
             &amm_program,
             swap_info_result,
