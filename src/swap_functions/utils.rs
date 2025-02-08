@@ -5,7 +5,6 @@ use spl_token_2022::extension::{
     transfer_fee::{TransferFeeConfig, MAX_FEE_BASIS_POINTS},
     BaseState, BaseStateWithExtensions, StateWithExtensionsMut,
 };
-use std::ops::Mul;
 
 pub fn deserialize_anchor_account<T: AccountDeserialize>(account: &Account) -> Result<T> {
     let mut data: &[u8] = &account.data;
@@ -31,51 +30,4 @@ pub fn get_transfer_inverse_fee<'data, S: BaseState>(
         0
     };
     fee
-}
-
-pub fn _amount_with_slippage(amount: u64, slippage: f64, round_up: bool) -> u64 {
-    if round_up {
-        (amount as f64).mul(1_f64 + slippage).ceil() as u64
-    } else {
-        (amount as f64).mul(1_f64 - slippage).floor() as u64
-    }
-}
-
-// pub async fn fetch_pool_state(rpc_client: &RpcClient, pool_id: &Pubkey) -> Result<PoolState> {
-//     let account_data = rpc_client.get_account_data(pool_id)?;
-//     let pool_state = PoolState::try_from_slice(&account_data)?;
-//     Ok(pool_state)
-// }
-
-// pub async fn get_fee_rates(rpc_client: &RpcClient, pool_id: &Pubkey) -> Result<(u64, u64, u64)> {
-//     println!("Starting get fee info...");
-//     let pool_state_result = fetch_pool_state(rpc_client, pool_id).await;
-//     match pool_state_result {
-//         Ok(pool_state) => {
-//             println!("Finishing get fee info...");
-//             Ok((pool_state.trade_fee_rate, pool_state.protocol_fee_rate, pool_state.fund_fee_rate))
-//         }
-//         Err(e) => {
-//             eprintln!("Error fetching pool state: {:?}", e);
-//             return Err(anyhow::anyhow!("Failed to fetch pool state: {}", e)); // Ensure anyhow is imported or use anyhow! macro
-//         }
-//     }
-// }
-
-pub fn calculate_amount_out_less_fee(
-    amount_in: u64,
-    trade_fee_rate: u64,
-    protocol_fee_rate: u64,
-    fund_fee_rate: u64,
-) -> u64 {
-    // Calculate the total fee rate
-    let total_fee_rate = trade_fee_rate + protocol_fee_rate + fund_fee_rate;
-
-    // Calculate the total fees
-    let total_fees = amount_in * total_fee_rate / 1_000_000; // Assuming fee rates are in millionths
-
-    // Calculate the amount out less fee
-    let amount_out_less_fee = amount_in - total_fees;
-
-    amount_out_less_fee
 }

@@ -6,7 +6,8 @@ use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     account::Account, program_pack::Pack, pubkey::Pubkey, signer::{keypair::Keypair, Signer}, system_instruction,
-    compute_budget::ComputeBudgetInstruction
+    compute_budget::ComputeBudgetInstruction,
+    instruction::Instruction
 };
 use spl_associated_token_account::get_associated_token_address;
 use spl_associated_token_account::instruction::create_associated_token_account;
@@ -14,8 +15,7 @@ use spl_token_2022::{
     extension::StateWithExtensions,
     state::Account as Account2022,
 };
-use std::{collections::VecDeque, env, str::FromStr, sync::Arc};
-use tokio::task;
+use std::{collections::VecDeque, env, str::FromStr, sync::Arc, rc::Rc};
 use anchor_lang::AccountDeserialize;
 use arrayref::array_ref;
 use std::ops::{DerefMut, Neg, Mul};
@@ -27,7 +27,7 @@ use raydium_amm_v3::{
 use raydium_amm_v3::accounts as raydium_accounts;
 use raydium_amm_v3::instruction as raydium_instruction;
 
-pub async fn swap_cpmm(
+pub async fn swap_clmm(
     pool_id: Option<&str>,
     keypair: Keypair,
     mint_str: &str,
@@ -38,7 +38,7 @@ pub async fn swap_cpmm(
 ) -> Result<Vec<String>> {
     let owner = keypair.pubkey();
     let mint = Pubkey::from_str(mint_str)?;
-    let pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;
+    let _pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;
 
     // Get token account balance
     let token_ata = get_associated_token_address(&owner, &mint);
@@ -52,23 +52,11 @@ pub async fn swap_cpmm(
     }
     // Use the entire token balance
     let amount_raw = token_balance;
-    let max_amount_in = amount_raw - (amount_raw * slippage as u64) / 100;
-
-    // Calculate minimum amount out (you may want to adjust this based on your requirements)
-    let _amount_out = amount_raw; // This should ideally be calculated based on pool state and price impact
 
     // Build instructions vector
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let ws_url = "wss://api.mainnet-beta.solana.com/";
-    let url = Cluster::Custom(rpc_url, ws_url.to_string());
-    let keypair_arc = Arc::new(keypair);
-    let anchor_client = Client::new(url.clone(), keypair_arc.clone());
-    let program_id_str = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
-    let program_id = Pubkey::from_str(program_id_str)?;
-    let program = anchor_client.program(program_id)?;
-    let pool_state_result = task::spawn_blocking(move || {
-        program.account(pool_pubkey) // Blocking call
-    }).await;
+    let keypair_arc = Arc::new(keypair.insecure_clone());
 
     let amm_config_index = 1 as u16;
     let (amm_config_key, __bump) = Pubkey::find_program_address(
@@ -78,233 +66,256 @@ pub async fn swap_cpmm(
         ],
         &raydium_amm_v3::ID,
     );
-    let input_token = raydium_amm_v3::ID;
-    let output_token = raydium_amm_v3::ID;
-    let mint0 = Some(mint);
-    let mint1 = (spl_token::native_mint::ID);
-    let pool_config = ClientConfig {
-        http_url: rpc_url,
-        ws_url: ws_url.to_string(),
-        payer: &keypair_arc.clone(),
-        40,
-        amm_config_key,
+    let input_token = mint;
+    let output_token = spl_token::native_mint::ID;
+    let limit_price = None;
+    let base_in = true;
+    let amount = amount_raw as u64;
 
-    };
-    match pool_state_result {
-        Ok(Ok(pool_state)) => {
-
-            let load_accounts = vec![
-                input_token,
-                output_token,
-                pool_config.amm_config_key,
-                pool_config.pool_id_account.unwrap(),
-                pool_config.tickarray_bitmap_extension.unwrap(),
-            ];
-            let rsps = blocking_client.get_multiple_accounts(&load_accounts)?;
-            let [user_input_account, user_output_account, amm_config_account, pool_account, tickarray_bitmap_extension_account] =
-                array_ref![rsps, 0, 5];
-            let user_input_state =
-                StateWithExtensions::<Account2022>::unpack(&user_input_account.as_ref().unwrap().data)
-                    .unwrap();
-            let user_output_state =
-                StateWithExtensions::<Account2022>::unpack(&user_output_account.as_ref().unwrap().data)
-                    .unwrap();
-            let amm_config_state = deserialize_anchor_account::<raydium_amm_v3::states::AmmConfig>(
-                amm_config_account.as_ref().unwrap(),
-            )?;
-            let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(
-                pool_account.as_ref().unwrap(),
-            )?;
-            let tickarray_bitmap_extension =
-                deserialize_anchor_account::<raydium_amm_v3::states::TickArrayBitmapExtension>(
-                    tickarray_bitmap_extension_account.as_ref().unwrap(),
-                )?;
-            let zero_for_one = user_input_state.base.mint == pool_state.token_mint_0
-                && user_output_state.base.mint == pool_state.token_mint_1;
-            // load tick_arrays
-            let mut tick_arrays = load_cur_and_next_five_tick_array(
-                &blocking_client,
-                &pool_config,
-                &pool_state,
-                &tickarray_bitmap_extension,
-                zero_for_one,
-            );
-
-            let mut sqrt_price_limit_x64 = None;
-            if limit_price.is_some() {
-                let sqrt_price_x64 = price_to_sqrt_price_x64(
-                    limit_price.unwrap(),
-                    pool_state.mint_decimals_0,
-                    pool_state.mint_decimals_1,
-                );
-                sqrt_price_limit_x64 = Some(sqrt_price_x64);
-            }
-
-            let (mut other_amount_threshold, mut tick_array_indexs) =
-                get_out_put_amount_and_remaining_accounts(
-                    amount,
-                    sqrt_price_limit_x64,
-                    zero_for_one,
-                    base_in,
-                    &amm_config_state,
-                    &pool_state,
-                    &tickarray_bitmap_extension,
-                    &mut tick_arrays,
-                )
-                .unwrap();
-            println!(
-                "amount:{}, other_amount_threshold:{}",
-                amount, other_amount_threshold
-            );
-            if base_in {
-                // min out
-                other_amount_threshold =
-                    amount_with_slippage(other_amount_threshold, pool_config.slippage, false);
-            } else {
-                // max in
-                other_amount_threshold =
-                    amount_with_slippage(other_amount_threshold, pool_config.slippage, true);
-            }
-
-            let current_or_next_tick_array_key = Pubkey::find_program_address(
+    let mut mint0 = Some(mint);
+    let mut mint1 = Some(spl_token::native_mint::ID);
+    let payer = keypair.insecure_clone();
+    let pool_id_account = if mint0 != None && mint1 != None {
+        if mint0.unwrap() > mint1.unwrap() {
+            println!("mint0 is bigger than mint1");
+            let temp_mint = mint0;
+            mint0 = mint1;
+            mint1 = temp_mint;
+        }
+        Some(
+            Pubkey::find_program_address(
                 &[
-                    raydium_amm_v3::states::TICK_ARRAY_SEED.as_bytes(),
-                    pool_config.pool_id_account.unwrap().to_bytes().as_ref(),
-                    &tick_array_indexs.pop_front().unwrap().to_be_bytes(),
+                    raydium_amm_v3::states::POOL_SEED.as_bytes(),
+                    amm_config_key.to_bytes().as_ref(),
+                    mint0.unwrap().to_bytes().as_ref(),
+                    mint1.unwrap().to_bytes().as_ref(),
                 ],
-                &pool_config.raydium_v3_program,
+                &raydium_amm_v3::ID,
             )
-            .0;
-            let mut remaining_accounts = Vec::new();
-            remaining_accounts.push(AccountMeta::new_readonly(
-                pool_config.tickarray_bitmap_extension.unwrap(),
-                false,
-            ));
-            let mut accounts = tick_array_indexs
-                .into_iter()
-                .map(|index| {
-                    AccountMeta::new(
-                        Pubkey::find_program_address(
-                            &[
-                                raydium_amm_v3::states::TICK_ARRAY_SEED.as_bytes(),
-                                pool_config.pool_id_account.unwrap().to_bytes().as_ref(),
-                                &index.to_be_bytes(),
-                            ],
-                            &pool_config.raydium_v3_program,
-                        )
-                        .0,
-                        false,
-                    )
-                })
-                .collect();
-            remaining_accounts.append(&mut accounts);
-            let mut instructions = Vec::new();
-            let request_inits_instr = ComputeBudgetInstruction::set_compute_unit_limit(1400_000u32);
-            instructions.push(request_inits_instr);
-            let swap_instr = swap_instr(
-                &pool_config.clone(),
-                pool_state.amm_config,
-                pool_config.pool_id_account.unwrap(),
-                if zero_for_one {
-                    pool_state.token_vault_0
-                } else {
-                    pool_state.token_vault_1
-                },
-                if zero_for_one {
-                    pool_state.token_vault_1
-                } else {
-                    pool_state.token_vault_0
-                },
-                pool_state.observation_key,
-                input_token,
-                output_token,
-                current_or_next_tick_array_key,
-                remaining_accounts,
-                amount,
-                other_amount_threshold,
-                sqrt_price_limit_x64,
-                base_in,
+            .0,
+        )
+    } else {
+        None
+    };
+    let tickarray_bitmap_extension = if pool_id_account != None {
+        Some(
+            Pubkey::find_program_address(
+                &[
+                    POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(),
+                    pool_id_account.unwrap().to_bytes().as_ref(),
+                ],
+                &raydium_amm_v3::ID,
             )
+            .0,
+        )
+    } else {
+        None
+    };
+    let pool_config = ClientConfig {
+        http_url: rpc_url.clone(),
+        ws_url: ws_url.to_string(),
+        raydium_v3_program: raydium_amm_v3::ID,
+        slippage: slippage as f64,
+        amm_config_key: amm_config_key,
+        mint0: mint0,
+        mint1: mint1,
+        pool_id_account: pool_id_account,
+        tickarray_bitmap_extension: tickarray_bitmap_extension
+    };
+    let load_accounts = vec![
+        input_token,
+        output_token,
+        pool_config.amm_config_key,
+        pool_config.pool_id_account.unwrap(),
+        pool_config.tickarray_bitmap_extension.unwrap(),
+    ];
+    let rsps = blocking_client.get_multiple_accounts(&load_accounts)?;
+    let [user_input_account, user_output_account, amm_config_account, pool_account, tickarray_bitmap_extension_account] =
+        array_ref![rsps, 0, 5];
+    let user_input_state =
+        StateWithExtensions::<Account2022>::unpack(&user_input_account.as_ref().unwrap().data)
             .unwrap();
-            let swap_instr = 
-            instructions.extend(swap_instr);
-            // send
+    let user_output_state =
+        StateWithExtensions::<Account2022>::unpack(&user_output_account.as_ref().unwrap().data)
+            .unwrap();
+    let amm_config_state = deserialize_anchor_account::<raydium_amm_v3::states::AmmConfig>(
+        amm_config_account.as_ref().unwrap(),
+    )?;
+    let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(
+        pool_account.as_ref().unwrap(),
+    )?;
+    let tickarray_bitmap_extension =
+        deserialize_anchor_account::<raydium_amm_v3::states::TickArrayBitmapExtension>(
+            tickarray_bitmap_extension_account.as_ref().unwrap(),
+        )?;
+    let zero_for_one = user_input_state.base.mint == pool_state.token_mint_0
+        && user_output_state.base.mint == pool_state.token_mint_1;
+    // load tick_arrays
+    let mut tick_arrays = load_cur_and_next_five_tick_array(
+        &blocking_client,
+        &pool_config,
+        &pool_state,
+        &tickarray_bitmap_extension,
+        zero_for_one,
+    );
 
-                let mut instructions = Vec::new();
-                let program_token = anchor_client.program(spl_token::id())?;
-
-                let create_instr = Some(create_associated_token_account(
-                    &keypair_arc.clone().pubkey(),
-                    &keypair_arc.clone().pubkey(),
-                    &pool_state.token_0_mint,
-                    &spl_token::ID
-                ));
-                if let Some(create_instr) = create_instr {
-                    println!("Create added");
-                    instructions.push(create_instr);
-                }
-                let seed = &format!("{}", Keypair::new().pubkey())[..32];
-                let wsol_pubkey = Pubkey::create_with_seed(&owner, seed, &spl_token::id())?;
-                let rent = nonblocking_client
-                    .get_minimum_balance_for_rent_exemption(Account2022::LEN)
-        .           await?;
-                instructions.push(system_instruction::create_account_with_seed(
-                    &keypair_arc.clone().pubkey(),
-                    &wsol_pubkey,
-                    &keypair_arc.clone().pubkey(),
-                    seed,
-                    rent,
-                    Account2022::LEN as u64, // 165, // Token account size
-                    &spl_token::id(),
-                ));
-                let native_mint = spl_token::native_mint::ID;
-                instructions.push(spl_token::instruction::initialize_account(
-                    &spl_token::id(),
-                    &wsol_pubkey,
-                    &native_mint,
-                    &keypair_arc.clone().pubkey(),
-                )?);
-
-                
-                let in_ata = get_associated_token_address(&keypair_arc.clone().pubkey(), &input_token_mint);
-                let close_wsol_account_instruction = Some(spl_token::instruction::close_account(
-                    &spl_token::ID,
-                    &wsol_pubkey,
-                    &keypair_arc.clone().pubkey(),
-                    &keypair_arc.clone().pubkey(),
-                    &vec![&keypair_arc.clone().pubkey()],
-                )?);
-                if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
-                    println!("Close WSOl added");
-                    instructions.push(close_wsol_account_instruction);
-                }
-                let close_instruction = Some(spl_token::instruction::close_account(
-                    &spl_token::ID,
-                    &in_ata,
-                    &keypair_arc.clone().pubkey(),
-                    &keypair_arc.clone().pubkey(),
-                    &vec![&keypair_arc.clone().pubkey()],
-                )?);
-                if let Some(close_instruction) = close_instruction {
-                    println!("Close added");
-                    instructions.push(close_instruction);
-                }
-                
-                new_signed_and_send(&blocking_client, &keypair_arc.clone(), instructions, use_jito).await
-            }
-            
-        Ok(Err(_err)) => {
-            // Handle the error from Program::account
-            let instructions = Vec::new();
-            new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
-        }
-        Err(_err) => {
-            // Handle the error from spawn_blocking
-            let instructions = Vec::new();
-            new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
-        }
+    let mut sqrt_price_limit_x64 = None;
+    if limit_price.is_some() {
+        let sqrt_price_x64 = price_to_sqrt_price_x64(
+            limit_price.unwrap(),
+            pool_state.mint_decimals_0,
+            pool_state.mint_decimals_1,
+        );
+        sqrt_price_limit_x64 = Some(sqrt_price_x64);
     }
 
+    let (mut other_amount_threshold, mut tick_array_indexs) =
+        get_out_put_amount_and_remaining_accounts(
+            amount,
+            sqrt_price_limit_x64,
+            zero_for_one,
+            base_in,
+            &amm_config_state,
+            &pool_state,
+            &tickarray_bitmap_extension,
+            &mut tick_arrays,
+        )
+        .unwrap();
+    println!(
+        "amount:{}, other_amount_threshold:{}",
+        amount, other_amount_threshold
+    );
+    if base_in {
+        // min out
+        other_amount_threshold =
+            amount_with_slippage(other_amount_threshold, pool_config.slippage, false);
+    } else {
+        // max in
+        other_amount_threshold =
+            amount_with_slippage(other_amount_threshold, pool_config.slippage, true);
+    }
+
+    let current_or_next_tick_array_key = Pubkey::find_program_address(
+        &[
+            raydium_amm_v3::states::TICK_ARRAY_SEED.as_bytes(),
+            pool_config.pool_id_account.unwrap().to_bytes().as_ref(),
+            &tick_array_indexs.pop_front().unwrap().to_be_bytes(),
+        ],
+        &pool_config.raydium_v3_program,
+    )
+    .0;
+    let mut remaining_accounts = Vec::new();
+    remaining_accounts.push(AccountMeta::new_readonly(
+        pool_config.tickarray_bitmap_extension.unwrap(),
+        false,
+    ));
+    let mut accounts = tick_array_indexs
+        .into_iter()
+        .map(|index| {
+            AccountMeta::new(
+                Pubkey::find_program_address(
+                    &[
+                        raydium_amm_v3::states::TICK_ARRAY_SEED.as_bytes(),
+                        pool_config.pool_id_account.unwrap().to_bytes().as_ref(),
+                        &index.to_be_bytes(),
+                    ],
+                    &pool_config.raydium_v3_program,
+                )
+                .0,
+                false,
+            )
+        })
+        .collect();
+    remaining_accounts.append(&mut accounts);
+    let mut instructions = Vec::new();
+    let request_inits_instr = ComputeBudgetInstruction::set_compute_unit_limit(1400_000u32);
+    instructions.push(request_inits_instr);
+    let swap_instr = swap_instr(
+        &pool_config,
+        payer,
+        pool_state.amm_config,
+        pool_config.pool_id_account.unwrap(),
+        if zero_for_one {
+            pool_state.token_vault_0
+        } else {
+            pool_state.token_vault_1
+        },
+        if zero_for_one {
+            pool_state.token_vault_1
+        } else {
+            pool_state.token_vault_0
+        },
+        pool_state.observation_key,
+        input_token,
+        output_token,
+        current_or_next_tick_array_key,
+        remaining_accounts,
+        amount,
+        other_amount_threshold,
+        sqrt_price_limit_x64,
+        base_in,
+    )
+    .unwrap();
+
+    let create_instr = Some(create_associated_token_account(
+        &keypair_arc.clone().pubkey(),
+        &keypair_arc.clone().pubkey(),
+        &mint0.unwrap(),
+        &spl_token::ID
+    ));
+    if let Some(create_instr) = create_instr {
+        println!("Create added");
+        instructions.push(create_instr);
+    }
+    let seed = &format!("{}", Keypair::new().pubkey())[..32];
+    let wsol_pubkey = Pubkey::create_with_seed(&owner, seed, &spl_token::id())?;
+    let rent = nonblocking_client
+        .get_minimum_balance_for_rent_exemption(Account2022::LEN)
+.           await?;
+    instructions.push(system_instruction::create_account_with_seed(
+        &keypair_arc.clone().pubkey(),
+        &wsol_pubkey,
+        &keypair_arc.clone().pubkey(),
+        seed,
+        rent,
+        Account2022::LEN as u64, // 165, // Token account size
+        &spl_token::id(),
+    ));
+    let native_mint = spl_token::native_mint::ID;
+    instructions.push(spl_token::instruction::initialize_account(
+        &spl_token::id(),
+        &wsol_pubkey,
+        &native_mint,
+        &keypair_arc.clone().pubkey(),
+    )?);
+
+    instructions.extend(swap_instr);
+    
+    let in_ata = get_associated_token_address(&keypair_arc.clone().pubkey(), &mint0.unwrap());
+    let close_wsol_account_instruction = Some(spl_token::instruction::close_account(
+        &spl_token::ID,
+        &wsol_pubkey,
+        &keypair_arc.clone().pubkey(),
+        &keypair_arc.clone().pubkey(),
+        &vec![&keypair_arc.clone().pubkey()],
+    )?);
+    if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
+        println!("Close WSOl added");
+        instructions.push(close_wsol_account_instruction);
+    }
+    let close_instruction = Some(spl_token::instruction::close_account(
+        &spl_token::ID,
+        &in_ata,
+        &keypair_arc.clone().pubkey(),
+        &keypair_arc.clone().pubkey(),
+        &vec![&keypair_arc.clone().pubkey()],
+    )?);
+    if let Some(close_instruction) = close_instruction {
+        println!("Close added");
+        instructions.push(close_instruction);
+    }
+    
+    new_signed_and_send(&blocking_client, &keypair_arc.clone(), instructions, use_jito).await
 }
 
 
@@ -656,4 +667,50 @@ pub fn amount_with_slippage(amount: u64, slippage: f64, round_up: bool) -> u64 {
     } else {
         (amount as f64).mul(1_f64 - slippage).floor() as u64
     }
+}
+
+pub fn swap_instr(
+    config: &ClientConfig,
+    payer: Keypair,
+    amm_config: Pubkey,
+    pool_account_key: Pubkey,
+    input_vault: Pubkey,
+    output_vault: Pubkey,
+    observation_state: Pubkey,
+    user_input_token: Pubkey,
+    user_out_put_token: Pubkey,
+    tick_array: Pubkey,
+    remaining_accounts: Vec<AccountMeta>,
+    amount: u64,
+    other_amount_threshold: u64,
+    sqrt_price_limit_x64: Option<u128>,
+    is_base_input: bool,
+) -> Result<Vec<Instruction>> {
+    let url = Cluster::Custom(config.http_url.clone(), config.ws_url.clone());
+    // Client.
+    let client = Client::new(url, Rc::new(payer));
+    let program = client.program(config.raydium_v3_program)?;
+    let instructions = program
+        .request()
+        .accounts(raydium_accounts::SwapSingle {
+            payer: program.payer(),
+            amm_config,
+            pool_state: pool_account_key,
+            input_token_account: user_input_token,
+            output_token_account: user_out_put_token,
+            input_vault,
+            output_vault,
+            tick_array,
+            observation_state,
+            token_program: spl_token::id(),
+        })
+        .accounts(remaining_accounts)
+        .args(raydium_instruction::Swap {
+            amount,
+            other_amount_threshold,
+            sqrt_price_limit_x64: sqrt_price_limit_x64.unwrap_or(0u128),
+            is_base_input,
+        })
+        .instructions()?;
+    Ok(instructions)
 }

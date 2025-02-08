@@ -37,6 +37,7 @@ use tracing::debug;
 use tracing::{error, info, warn};
 mod swap_functions;
 use swap_functions::swap_cpmm::swap_cpmm;
+use swap_functions::swap_clmm::swap_clmm;
 use swap_functions::new_signed_and_send::*;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -565,9 +566,6 @@ async fn swap(
                 pool_id,
                 keypair,
                 mint_str,
-                amount_in,
-                swap_direction,
-                in_type,
                 slippage,
                 use_jito,
                 blocking_client,
@@ -809,36 +807,6 @@ async fn swap_amm(
     new_signed_and_send(&blocking_client, &keypair, instructions, use_jito).await
 }
 
-async fn swap_clmm(
-    _pool_id: Option<&str>,
-    keypair: Keypair,
-    _mint_str: &str,
-    _amount_in: f64,
-    _swap_direction: SwapDirection,
-    _in_type: SwapInType,
-    _slippage: u64,
-    use_jito: bool,
-    blocking_client: Arc<RpcClient>,
-    _nonblocking_client: Arc<NonblockingRpcClient>,
-) -> Result<Vec<String>> {
-    // Implement Orca Whirlpool (CLMM) swap logic
-
-    // Build CLMM swap instruction
-    let mut instructions = vec![];
-
-    // Add CLMM-specific compute budget instructions
-    let modify_compute_units =
-        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(600_000);
-    let add_priority_fee =
-        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(
-            get_unit_price(),
-        );
-    instructions.push(modify_compute_units);
-    instructions.push(add_priority_fee);
-
-    new_signed_and_send(&blocking_client, &keypair, instructions, use_jito).await
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -847,6 +815,7 @@ async fn main() -> Result<()> {
 
     let swap_amount = 1.0; // 100% of tokens
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
+    let slippage = env::var("SLIPPAGE").expect("SLIPPAGE environment variable not set").parse().expect("SLIPPAGE must be a valid f64");
     let rpc_client = Arc::new(RpcClient::new(rpc_url));
     let pool_type = get_pool_type(&rpc_client, &pool_id).await?;
 
@@ -863,7 +832,7 @@ async fn main() -> Result<()> {
             swap_amount,
             SwapDirection::Sell,
             SwapInType::Pct,
-            40,
+            slippage,
             false,
             pool_type.clone(),
         )
