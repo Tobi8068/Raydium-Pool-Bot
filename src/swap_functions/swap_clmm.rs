@@ -12,7 +12,7 @@ use spl_token_2022::{
     extension::StateWithExtensions,
     state::Account as Account2022,
 };
-use std::{collections::VecDeque, env, str::FromStr, sync::Arc, rc::Rc};
+use std::{collections::VecDeque, env, rc::Rc, str::FromStr, sync::Arc};
 use anchor_lang::AccountDeserialize;
 use arrayref::array_ref;
 use std::ops::{DerefMut, Neg, Mul};
@@ -116,23 +116,22 @@ pub async fn swap_clmm(
     }
     let user_input_state =
         StateWithExtensions::<Account2022>::unpack(&user_input_account.as_ref().unwrap().data)
-            .unwrap();
+            .unwrap();   
     let user_output_state =
         StateWithExtensions::<Account2022>::unpack(&user_output_account.as_ref().unwrap().data)
             .unwrap();
     let amm_config_state = deserialize_anchor_account::<raydium_amm_v3::states::AmmConfig>(
         amm_config_account.as_ref().unwrap(),
     )?;
-    
-    let token_balance = blocking_client
+    let token_balance_wallet = blocking_client
         .get_token_account_balance(&token_ata)?
         .amount
         .parse::<u64>()?;
-    if token_balance == 0 {
+    if token_balance_wallet == 0 {
         return Err(anyhow!("No tokens available to swap"));
     }
     // Use the entire token balance
-    let amount_raw = token_balance;
+    let amount_raw = token_balance_wallet;
 
     let amount = amount_raw as u64;
 
@@ -229,7 +228,7 @@ pub async fn swap_clmm(
             amm_config: pool_state.amm_config,
             pool_state: pool_config.pool_id_account.unwrap(),
             input_token_account: input_token,
-            output_token_account: output_token,
+            output_token_account: wsol_pubkey,
             input_vault: if zero_for_one {
                 pool_state.token_vault_0
             } else {
