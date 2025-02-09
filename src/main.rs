@@ -218,7 +218,7 @@ async fn get_pool_state_by_mint(
     }
 }
 
-async fn get_pool_info(mint1: &str, mint2: &str) -> Result<PoolData> {
+async fn get_pool_info(mint1: &str, mint2: &str, pool_type: &str) -> Result<PoolData> {
     let mut client_builder = reqwest::Client::builder();
     if let Ok(http_proxy) = env::var("HTTP_PROXY") {
         let proxy = Proxy::all(http_proxy)?;
@@ -231,7 +231,7 @@ async fn get_pool_info(mint1: &str, mint2: &str) -> Result<PoolData> {
         .query(&[
             ("mint1", mint1),
             ("mint2", mint2),
-            ("poolType", "standard"),
+            ("poolType", pool_type),
             ("poolSortField", "default"),
             ("sortType", "desc"),
             ("pageSize", "1"),
@@ -281,7 +281,7 @@ async fn get_pool_state(
                 Err(e) => {
                     debug!("Failed to get pool by mint via RPC: {:?}", e);
                     // Try via Raydium API as fallback
-                    match get_pool_info(&spl_token::native_mint::ID.to_string(), mint).await {
+                    match get_pool_info(&spl_token::native_mint::ID.to_string(), mint, "standard").await {
                         Ok(pool_data) => {
                             match pool_data.get_pool() {
                                 Some(pool) => {
@@ -375,7 +375,7 @@ async fn get_pool_price(pool_id: Option<&str>, mint: Option<&str>) -> Result<(f6
     Ok((base_account.1, quote_account.1, price))
 }
 
-async fn get_account_info(
+async fn get_account_info_from_address(
     client: Arc<NonblockingRpcClient>,
     address: &Pubkey,
     account: &Pubkey,
@@ -612,7 +612,7 @@ async fn swap_amm(
     let (amount_specified, amount_ui_pretty) = match swap_direction {
         SwapDirection::Buy => {
             // Create base ATA if it doesn't exist.
-            match get_account_info(
+            match get_account_info_from_address(
                 nonblocking_client.clone(),
                 &token_out,
                 &out_ata,
@@ -641,7 +641,7 @@ async fn swap_amm(
             )
         }
         SwapDirection::Sell => {
-            let in_account = get_account_info(
+            let in_account = get_account_info_from_address(
                 nonblocking_client.clone(),
                 &token_in,
                 &in_ata,
@@ -812,12 +812,13 @@ async fn main() -> Result<()> {
     let rpc_client = Arc::new(RpcClient::new(rpc_url));
     let pool_type = get_pool_type(&rpc_client, &pool_id).await?;
 
+    
     println!("{:?}", pool_type);
-
+    
     let wallet = get_wallet()?;
     let mint = env::var("MINT_ADDRESS")?;
 
-    let mut pool_price = 0.0 as f64;
+    let mut is_swap = false;
 
     loop {
         match pool_type {
@@ -826,7 +827,9 @@ async fn main() -> Result<()> {
                 match get_pool_price(Some(&pool_id), None).await {
                     Ok((_base_amount, _quote_amount, current_price)) => {
                         println!("Current price AMM: {} SOL", current_price);
-                        pool_price = current_price;
+                        if current_price > target_price {
+                            is_swap = true;
+                        }
                     }
                     Err(e) => eprintln!("Error fetching pool price: {}", e),
                 }
@@ -834,12 +837,14 @@ async fn main() -> Result<()> {
             }
             PoolType::CPMM => {
                 println!("Get Pool Price CPMM ...");
+                is_swap = true;
             }
             PoolType::CLMM => {
                 println!("Get Pool Price CLMM ...");
+                is_swap = true;
             }
         }
-        if pool_price > target_price {
+        if is_swap {
             match swap(
                 Some(&pool_id),
                 wallet.insecure_clone(),
@@ -910,7 +915,7 @@ async fn main() -> Result<()> {
                     error!("Failed to initiate swap: {}", e);
                 }
             }
-            pool_price = 0.0;
+            is_swap = false;
         } else {
             // println!("Current pool price is lower than target price");
         }

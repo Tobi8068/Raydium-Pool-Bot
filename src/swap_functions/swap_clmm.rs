@@ -1,7 +1,7 @@
 use crate::swap_functions::new_signed_and_send::*;
 use anchor_client::{Client, Cluster};
 use anchor_lang::prelude::*;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -40,16 +40,6 @@ pub async fn swap_clmm(
     // Get token account balance
     let token_ata = get_associated_token_address(&owner, &mint);
     let w_ata = get_associated_token_address(&owner, &spl_token::native_mint::ID);
-    let token_balance = blocking_client
-        .get_token_account_balance(&token_ata)?
-        .amount
-        .parse::<u64>()?;
-
-    if token_balance == 0 {
-        return Err(anyhow!("No tokens available to swap"));
-    }
-    // Use the entire token balance
-    let amount_raw = token_balance;
 
     // Build instructions vector
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
@@ -57,7 +47,6 @@ pub async fn swap_clmm(
     let keypair_byte = keypair.to_bytes();
     let keypair_clone = Keypair::from_bytes(&keypair_byte).expect("Failed to clone keypair");
     let keypair_arc = Arc::new(&keypair_clone);
-
     let amm_config_index = 2 as u16;
     let (amm_config_key, __bump) = Pubkey::find_program_address(
         &[
@@ -70,8 +59,6 @@ pub async fn swap_clmm(
     let output_token = w_ata;
     let limit_price = None;
     let base_in = true;
-    let amount = amount_raw as u64;
-
     let mint0 = Some(mint);
     let mint1 = Some(spl_token::native_mint::ID);
     let payer_byte = keypair.to_bytes();
@@ -99,6 +86,35 @@ pub async fn swap_clmm(
     let rsps = blocking_client.get_multiple_accounts(&load_accounts)?;
     let [user_input_account, user_output_account, amm_config_account, pool_account, tickarray_bitmap_extension_account] =
         array_ref![rsps, 0, 5];
+    let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(
+        pool_account.as_ref().unwrap(),
+    )?;
+    let sol_balance = blocking_client
+        .get_token_account_balance(&pool_state.token_vault_1)?;
+
+
+    let token_balance = blocking_client
+        .get_token_account_balance(&pool_state.token_vault_0)?;
+
+    // Convert amounts
+    let sol_amount = sol_balance
+        .amount
+        .parse::<f64>()?;
+
+    let token_amount = token_balance
+        .amount
+        .parse::<f64>()?;
+    // println!("Token Amounts {} : {}: {}", sol_amount, token_amount, token_amount / sol_amount);
+    let pool_price = token_amount / sol_amount;
+    let target_price_str =
+        env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
+    let target_price: f64 = target_price_str  
+        .parse::<f64>()  
+        .context("Failed to parse TARGET_PRICE as f64")?; 
+    if pool_price < target_price {
+        println!("Current price is lower than target price");
+        return Err(anyhow!("Current price is lower than target price"));
+    }
     let user_input_state =
         StateWithExtensions::<Account2022>::unpack(&user_input_account.as_ref().unwrap().data)
             .unwrap();
@@ -108,9 +124,19 @@ pub async fn swap_clmm(
     let amm_config_state = deserialize_anchor_account::<raydium_amm_v3::states::AmmConfig>(
         amm_config_account.as_ref().unwrap(),
     )?;
-    let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(
-        pool_account.as_ref().unwrap(),
-    )?;
+    
+    let token_balance = blocking_client
+        .get_token_account_balance(&token_ata)?
+        .amount
+        .parse::<u64>()?;
+    // if token_balance == 0 {
+    //     return Err(anyhow!("No tokens available to swap"));
+    // }
+    // Use the entire token balance
+    let amount_raw = token_balance;
+
+    let amount = amount_raw as u64;
+
     let tickarray_bitmap_extension =
         deserialize_anchor_account::<raydium_amm_v3::states::TickArrayBitmapExtension>(
             tickarray_bitmap_extension_account.as_ref().unwrap(),

@@ -1,7 +1,7 @@
 use crate::swap_functions::new_signed_and_send::*;
 use crate::swap_functions::utils::{deserialize_anchor_account, get_transfer_inverse_fee};
 use anchor_client::{Client, Cluster};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use arrayref::array_ref;
 use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_client::rpc_client::RpcClient;
@@ -34,23 +34,9 @@ pub async fn swap_cpmm(
     let owner = keypair.pubkey();
     let mint = Pubkey::from_str(mint_str)?;
     let pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;
-
     // Get token account balance
     let token_ata = get_associated_token_address(&owner, &mint);
-    let token_balance = blocking_client
-        .get_token_account_balance(&token_ata)?
-        .amount
-        .parse::<u64>()?;
-
-    if token_balance == 0 {
-        return Err(anyhow!("No tokens available to swap"));
-    }
-    // Use the entire token balance
-    let amount_raw = token_balance;
-
-    // Calculate minimum amount out (you may want to adjust this based on your requirements)
-    let _amount_out = amount_raw; // This should ideally be calculated based on pool state and price impact
-
+    
     // Build instructions vector
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
     let ws_url = "wss://api.mainnet-beta.solana.com/";
@@ -76,6 +62,46 @@ pub async fn swap_cpmm(
                 pool_state.token_1_mint,
                 token_ata.clone(),   
             ];
+
+            let sol_balance = blocking_client
+            .get_token_account_balance(&pool_state.token_1_vault)?;
+
+
+            let token_balance = blocking_client
+                .get_token_account_balance(&pool_state.token_0_vault)?;
+
+            // Convert amounts
+            let sol_amount = sol_balance
+                .amount
+                .parse::<f64>()?;
+
+            let token_amount = token_balance
+                .amount
+                .parse::<f64>()?;
+            // println!("Token Amounts {}", token_amount / sol_amount);
+            let pool_price = token_amount / sol_amount;
+            let target_price_str =
+                env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
+            let target_price: f64 = target_price_str  
+                .parse::<f64>()  
+                .context("Failed to parse TARGET_PRICE as f64")?; 
+            if pool_price < target_price {
+                println!("Current price is lower than target price");
+                return Err(anyhow!("Current price is lower than target price"));
+            }
+
+            let token_balance = blocking_client
+                .get_token_account_balance(&token_ata)?
+                .amount
+                .parse::<u64>()?;
+            if token_balance == 0 {
+                return Err(anyhow!("No tokens available to swap"));
+            }
+            // Use the entire token balance
+            let amount_raw = token_balance;
+
+            // Calculate minimum amount out (you may want to adjust this based on your requirements)
+            let _amount_out = amount_raw;
 
             let rsps = blocking_client.get_multiple_accounts(&load_pubkeys)?;
             let epoch = blocking_client.get_epoch_info().unwrap().epoch;

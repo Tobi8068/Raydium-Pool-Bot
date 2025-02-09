@@ -30,11 +30,13 @@ dependencies = [
  "common",
  "cpswap-cli",
  "ctor",
+ "decimal-wad",
  "dotenv",
  "dotenvy",
  "futures-util",
  "indicatif",
  "jito-block-engine-json-rpc-client",
+ "num_enum 0.7.3",
  "rand 0.8.5",
  "raydium-amm-v3",
  "raydium-cp-swap",
@@ -1634,6 +1636,15 @@ name = "data-encoding"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e60eed09d8c01d3cee5b7d30acb059b76614c918fa0f992e0dd6eeb10daad6f"
+
+[[package]]
+name = "decimal-wad"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3cc2736e4f7d82be485e49c721a7031f30e1f57b433bb346d7a6af4c377fd0f"
+dependencies = [
+ "uint 0.9.5 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "default-env"
