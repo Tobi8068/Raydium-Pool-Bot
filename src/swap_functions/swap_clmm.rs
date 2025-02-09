@@ -104,7 +104,6 @@ pub async fn swap_clmm(
     let token_amount = token_balance
         .amount
         .parse::<f64>()?;
-    // println!("Token Amounts {} : {}: {}", sol_amount, token_amount, token_amount / sol_amount);
     let pool_price = token_amount / sol_amount;
     let target_price_str =
         env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
@@ -129,9 +128,9 @@ pub async fn swap_clmm(
         .get_token_account_balance(&token_ata)?
         .amount
         .parse::<u64>()?;
-    // if token_balance == 0 {
-    //     return Err(anyhow!("No tokens available to swap"));
-    // }
+    if token_balance == 0 {
+        return Err(anyhow!("No tokens available to swap"));
+    }
     // Use the entire token balance
     let amount_raw = token_balance;
 
@@ -217,16 +216,7 @@ pub async fn swap_clmm(
     // Client.
     let client = Client::new(url, Rc::new(payer));
     let program = client.program(pool_config.raydium_v3_program)?;
-    
-    // let create_instr = Some(create_associated_token_account(
-    //     &keypair_arc.clone().pubkey(),
-    //     &keypair_arc.clone().pubkey(),
-    //     &mint1.unwrap(),
-    //     &spl_token::ID
-    // ));
-    // if let Some(create_instr) = create_instr {
-    //     instructions.push(create_instr);
-    // }
+
     let seed = &format!("{}", Keypair::new().pubkey())[..32];
     let wsol_pubkey = Pubkey::create_with_seed(&owner, seed, &spl_token::id())?;
     let rent = nonblocking_client
@@ -291,16 +281,6 @@ pub async fn swap_clmm(
     if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
         instructions.push(close_wsol_account_instruction);
     }
-    // let close_instruction = Some(spl_token::instruction::close_account(
-    //     &spl_token::ID,
-    //     &in_ata,
-    //     &keypair_arc.clone().pubkey(),
-    //     &keypair_arc.clone().pubkey(),
-    //     &vec![&keypair_arc.clone().pubkey()],
-    // )?);
-    // if let Some(close_instruction) = close_instruction {
-    //     instructions.push(close_instruction);
-    // }
     new_signed_and_send(&blocking_client, &keypair_clone, instructions, use_jito).await
 }
 

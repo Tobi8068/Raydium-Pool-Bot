@@ -78,7 +78,6 @@ pub async fn swap_cpmm(
             let token_amount = token_balance
                 .amount
                 .parse::<f64>()?;
-            // println!("Token Amounts {}", token_amount / sol_amount);
             let pool_price = token_amount / sol_amount;
             let target_price_str =
                 env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
@@ -129,13 +128,6 @@ pub async fn swap_cpmm(
                         token_0_vault_info.base.amount,
                         token_1_vault_info.base.amount,
                     );
-                    // // Calculate the amount out less fee
-                    // let amount_out_less_fee = calculate_amount_out_less_fee(
-                    //     max_amount_in,
-                    //     amm_config_state.trade_fee_rate,
-                    //     amm_config_state.protocol_fee_rate,
-                    //     amm_config_state.fund_fee_rate,
-                    // );
                     let amount_out_less_fee = swap_calculate(&blocking_client, pool_pubkey, token_ata.clone(), amount_raw, 30, true)?.other_amount_threshold;
                     let (
                         trade_direction,
