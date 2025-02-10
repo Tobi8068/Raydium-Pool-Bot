@@ -40,6 +40,8 @@ use swap_functions::swap_cpmm::swap_cpmm;
 use swap_functions::swap_clmm::swap_clmm;
 use swap_functions::new_signed_and_send::*;
 
+mod jito;
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Pool {
     pub id: String,
@@ -818,32 +820,50 @@ async fn main() -> Result<()> {
     let wallet = get_wallet()?;
     let mint = env::var("MINT_ADDRESS")?;
 
-    let mut is_swap = false;
+    let use_jito = true;
+
+    let is_swap = true;
+
+    if use_jito {
+        jito::init_tip_accounts()
+            .await
+            .map_err(|err| {
+                info!("failed to get tip accounts: {:?}", err);
+                err
+            })
+            .unwrap();
+        jito::init_tip_amounts()
+            .await
+            .map_err(|err| {
+                info!("failed to init tip amounts: {:?}", err);
+                err
+            })
+            .unwrap();
+    }
 
     loop {
-        match pool_type {
-            PoolType::AMM => {
-                println!("Get Pool Price AMM ...");
-                match get_pool_price(Some(&pool_id), None).await {
-                    Ok((_base_amount, _quote_amount, current_price)) => {
-                        println!("Current price AMM: {} SOL", current_price);
-                        if current_price > target_price {
-                            is_swap = true;
-                        }
-                    }
-                    Err(e) => eprintln!("Error fetching pool price: {}", e),
-                }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
-            PoolType::CPMM => {
-                println!("Get Pool Price CPMM ...");
-                is_swap = true;
-            }
-            PoolType::CLMM => {
-                println!("Get Pool Price CLMM ...");
-                is_swap = true;
-            }
-        }
+        // match pool_type {
+        //     PoolType::AMM => {
+        //         println!("Get Pool Price AMM ...");
+        //         match get_pool_price(Some(&pool_id), None).await {
+        //             Ok((_base_amount, _quote_amount, current_price)) => {
+        //                 println!("Current price AMM: {} SOL", current_price);
+        //                 if current_price > target_price {
+        //                     is_swap = true;
+        //                 }
+        //             }
+        //             Err(e) => eprintln!("Error fetching pool price: {}", e),
+        //         }
+        //     }
+        //     PoolType::CPMM => {
+        //         println!("Get Pool Price CPMM ...");
+        //         is_swap = true;
+        //     }
+        //     PoolType::CLMM => {
+        //         println!("Get Pool Price CLMM ...");
+        //         is_swap = true;
+        //     }
+        // }
         if is_swap {
             match swap(
                 Some(&pool_id),
@@ -853,7 +873,7 @@ async fn main() -> Result<()> {
                 SwapDirection::Sell,
                 SwapInType::Pct,
                 30,
-                false,
+                use_jito,
                 pool_type.clone(),
             )
             .await
@@ -915,7 +935,7 @@ async fn main() -> Result<()> {
                     error!("Failed to initiate swap: {}", e);
                 }
             }
-            is_swap = false;
+            // is_swap = false;
         } else {
             // println!("Current pool price is lower than target price");
         }

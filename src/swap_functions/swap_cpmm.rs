@@ -42,7 +42,6 @@ pub async fn swap_cpmm(
     let ws_url = "wss://api.mainnet-beta.solana.com/";
     let url = Cluster::Custom(rpc_url, ws_url.to_string());
     let keypair_arc = Arc::new(keypair);
-    // let anchor_client = Client::new(url.clone(), keypair_arc.clone());
     let anchor_client = Client::new(url.clone(), keypair_arc.clone());
     let program_id_str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
     let program_id = Pubkey::from_str(program_id_str)?;

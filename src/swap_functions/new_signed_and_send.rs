@@ -2,12 +2,15 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     instruction::Instruction,
     signer::{keypair::Keypair, Signer},
-    transaction::Transaction
+    system_transaction,
+    transaction::{Transaction, VersionedTransaction}
 };
 use anyhow::{anyhow, Result};
-use std::env;
-use tracing::info;
+use std::{env, sync::Arc, time::Duration};
+use tracing::{info, error};
 use std::str::FromStr;
+use jito_json_rpc_client::jsonrpc_client::rpc_client::RpcClient as JitoRpcClient;
+use crate::jito::{self, get_tip_account, get_tip_value, wait_for_bundle_confirmation};
 
 pub async fn new_signed_and_send(
     client: &RpcClient,
@@ -51,15 +54,56 @@ pub async fn new_signed_and_send(
             None => Ok(vec![]),
         };
     }
-
+    let mut txs = vec![];
     if use_jito {
         // jito implementation placeholder
-        Ok(vec![])
+        let tip_account = get_tip_account().await?;
+        // jito tip, the upper limit is 0.1
+        let mut tip = get_tip_value().await?;
+        tip = tip.min(0.1);
+        let tip_lamports = ui_amount_to_amount(tip, spl_token::native_mint::DECIMALS);
+        info!(
+            "tip account: {}, tip(sol): {}, lamports: {}",
+            tip_account, tip, tip_lamports
+        );
+
+        let jito_client = Arc::new(JitoRpcClient::new(format!(
+            "{}/api/v1/bundles",
+            jito::BLOCK_ENGINE_URL.to_string()
+        )));
+        // tip tx
+        let mut bundle: Vec<VersionedTransaction> = vec![];
+        bundle.push(VersionedTransaction::from(txn));
+        bundle.push(VersionedTransaction::from(system_transaction::transfer(
+            &keypair,
+            &tip_account,
+            tip_lamports,
+            recent_blockhash,
+        )));
+        let bundle_id = jito_client.send_bundle(&bundle).await?;
+        
+        txs = wait_for_bundle_confirmation(
+            move |id: String| {
+                let client = Arc::clone(&jito_client);
+                async move {
+                    let response = client.get_bundle_statuses(&[id]).await;
+                    let statuses = response.inspect_err(|err| {
+                        error!("Error fetching bundle status: {:?}", err);
+                    })?;
+                    Ok(statuses.value)
+                }
+            },
+            bundle_id,
+            Duration::from_millis(1000),
+            Duration::from_secs(10),
+        )
+        .await?;
     } else {
         let sig = common::rpc::send_txn(&client, &txn, true)?;
         info!("signature: {:?}", sig);
-        Ok(vec![sig.to_string()])
+        txs.push(sig.to_string());
     }
+    Ok(txs)
 }
 
 pub fn get_unit_price() -> u64 {
@@ -74,4 +118,7 @@ pub fn get_unit_limit() -> u32 {
         .ok()
         .and_then(|v| u32::from_str(&v).ok())
         .unwrap_or(200_000)
+}
+pub fn ui_amount_to_amount(ui_amount: f64, decimals: u8) -> u64 {
+    (ui_amount * 10_usize.pow(decimals as u32) as f64) as u64
 }

@@ -39,7 +39,7 @@ pub async fn swap_clmm(
 
     // Get token account balance
     let token_ata = get_associated_token_address(&owner, &mint);
-    let w_ata = get_associated_token_address(&owner, &spl_token::native_mint::ID);
+    let w_ata = get_associated_token_address(&spl_token::ID, &spl_token::native_mint::ID);
 
     // Build instructions vector
     let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");
@@ -141,6 +141,7 @@ pub async fn swap_clmm(
         )?;
     let zero_for_one = user_input_state.base.mint == pool_state.token_mint_0
         && user_output_state.base.mint == pool_state.token_mint_1;
+    println!("Token Mint {:?} : {:?} : {:?} : {:?}", user_input_state.base.mint, user_output_state.base.mint, pool_state.token_mint_0, pool_state.token_mint_1);
     // load tick_arrays
     let mut tick_arrays = load_cur_and_next_five_tick_array(
         &blocking_client,
@@ -280,6 +281,7 @@ pub async fn swap_clmm(
     if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
         instructions.push(close_wsol_account_instruction);
     }
+    println!("FInal");
     new_signed_and_send(&blocking_client, &keypair_clone, instructions, use_jito).await
 }
 
