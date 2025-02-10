@@ -82,7 +82,7 @@ pub async fn new_signed_and_send(
         )));
         let bundle_id = jito_client.send_bundle(&bundle).await?;
         
-        txs = wait_for_bundle_confirmation(
+        txs = match wait_for_bundle_confirmation(
             move |id: String| {
                 let client = Arc::clone(&jito_client);
                 async move {
@@ -97,7 +97,20 @@ pub async fn new_signed_and_send(
             Duration::from_millis(1000),
             Duration::from_secs(10),
         )
-        .await?;
+        .await {
+            Ok(signatures) => signatures,
+            Err(err) => {
+                // Check if the error is related to slippage
+                if err.to_string().contains("Slippage tolerance exceeded") {
+                    // Return the slippage error along with any transaction signatures we might have.
+                    error!("Slippage error detected: {}", err);
+                    return Ok(vec![format!("Slippage Error: {}", err)]); // Or a custom error string.
+                } else {
+                    // If it's a different error, propagate it.
+                    return Err(anyhow!("Bundle confirmation error: {}", err));
+                }
+            }
+        };
     } else {
         let sig = common::rpc::send_txn(&client, &txn, true)?;
         info!("signature: {:?}", sig);

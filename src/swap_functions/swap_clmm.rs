@@ -141,7 +141,6 @@ pub async fn swap_clmm(
         )?;
     let zero_for_one = user_input_state.base.mint == pool_state.token_mint_0
         && user_output_state.base.mint == pool_state.token_mint_1;
-    println!("Token Mint {:?} : {:?} : {:?} : {:?}", user_input_state.base.mint, user_output_state.base.mint, pool_state.token_mint_0, pool_state.token_mint_1);
     // load tick_arrays
     let mut tick_arrays = load_cur_and_next_five_tick_array(
         &blocking_client,
@@ -281,7 +280,6 @@ pub async fn swap_clmm(
     if let Some(close_wsol_account_instruction) = close_wsol_account_instruction {
         instructions.push(close_wsol_account_instruction);
     }
-    println!("FInal");
     new_signed_and_send(&blocking_client, &keypair_clone, instructions, use_jito).await
 }
 
@@ -633,4 +631,37 @@ pub fn amount_with_slippage(amount: u64, slippage: f64, round_up: bool) -> u64 {
     } else {
         (amount as f64).mul(1_f64 - slippage).floor() as u64
     }
+}
+
+pub async fn get_pool_price_clmm(  
+    pool_id: Option<&str>,  
+    blocking_client: Arc<RpcClient>,  
+) -> Result<f64> {  
+    let pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;  
+
+    // Load accounts needed for the pool state  
+    let load_accounts = vec![  
+        pool_pubkey.clone(),  
+    ];  
+
+    // Fetch the accounts  
+    let rsps = blocking_client.get_multiple_accounts(&load_accounts)?;  
+    let [pool_account] =  
+        array_ref![rsps, 0, 1];  
+
+    // Deserialize the pool state  
+    let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(  
+        pool_account.as_ref().unwrap_or_else(|| {  
+            panic!("Pool account is None") // Alternatively, you can handle this better  
+        }),  
+    )?;  
+    
+    // Calculate pool price  
+    let sqrt64 = pool_state.sqrt_price_x64 as u128;
+    let mint_decimals_0 = pool_state.mint_decimals_0 as i32;
+    let mint_decimals_1 = pool_state.mint_decimals_1 as i32;
+    let sqrt_price = sqrt64 as f64 / (1u128 << 64) as f64;
+    let pool_price = 1.0 / (sqrt_price * sqrt_price) / 10_f64.powi(mint_decimals_0 - mint_decimals_1);  
+
+    Ok(pool_price) // Return the calculated pool price  
 }

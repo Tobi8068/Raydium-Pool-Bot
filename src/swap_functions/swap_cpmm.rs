@@ -26,7 +26,7 @@ pub async fn swap_cpmm(
     pool_id: Option<&str>,
     keypair: Keypair,
     mint_str: &str,
-    _slippage: u64,
+    slippage: u64,
     use_jito: bool,
     blocking_client: Arc<RpcClient>,
     nonblocking_client: Arc<NonblockingRpcClient>,
@@ -127,7 +127,7 @@ pub async fn swap_cpmm(
                         token_0_vault_info.base.amount,
                         token_1_vault_info.base.amount,
                     );
-                    let amount_out_less_fee = swap_calculate(&blocking_client, pool_pubkey, token_ata.clone(), amount_raw, 30, true)?.other_amount_threshold;
+                    let amount_out_less_fee = swap_calculate(&blocking_client, pool_pubkey, token_ata.clone(), amount_raw, slippage, true)?.other_amount_threshold;
                     let (
                         trade_direction,
                         total_input_token_amount,
@@ -288,6 +288,7 @@ pub async fn swap_cpmm(
                     new_signed_and_send(&blocking_client, &keypair_arc.clone(), instructions, use_jito).await
                 },
                 Err(e) => {
+                    println!("CPMM Swap Program Error");
                     return Err(anyhow!("Failed to unpack user input token account: {}", e));
                 }
             }
@@ -296,14 +297,68 @@ pub async fn swap_cpmm(
         Ok(Err(_err)) => {
             // Handle the error from Program::account
             let instructions = Vec::new();
+            println!("CPMM Swap Client Error");
             new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
         }
         Err(_err) => {
             // Handle the error from spawn_blocking
             let instructions = Vec::new();
+            println!("CPMM Swap Join Error");
             new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
         }
     }
-
-    
 }
+
+pub async fn get_pool_price_cpmm(  
+    pool_id: Option<&str>,  
+    keypair: Keypair,  
+    blocking_client: Arc<RpcClient>,  
+) -> Result<f64> {      
+    // Assuming similar logic to fetch pool state here  
+    let pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;  
+        
+    // Similar logic to fetch pool state (could also call swap_cpmm again if only pool_price is needed)  
+    let program_id_str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";  
+    let program_id = Pubkey::from_str(program_id_str)?;  
+    let rpc_url = env::var("RPC_URL").expect("RPC_URL environment variable not set");  
+    let ws_url = "wss://api.mainnet-beta.solana.com/";  
+    let url = Cluster::Custom(rpc_url, ws_url.to_string());  
+    let keypair_arc = Arc::new(keypair);  
+    let anchor_client = Client::new(url.clone(), keypair_arc.clone());  
+    let program = anchor_client.program(program_id)?;  
+
+    let pool_state_result = task::spawn_blocking(move || {  
+        program.account(pool_pubkey) // Blocking call  
+    }).await;  
+
+    match pool_state_result {  
+        Ok(Ok(pool_state)) => {  
+            let pool_state: raydium_cp_swap::states::PoolState = pool_state;  
+
+            let sol_balance = blocking_client  
+                .get_token_account_balance(&pool_state.token_1_vault)?;  
+                
+            let token_balance = blocking_client  
+                .get_token_account_balance(&pool_state.token_0_vault)?;  
+
+            // Convert amounts  
+            let sol_amount = sol_balance  
+                .amount  
+                .parse::<f64>()?;  
+
+            let token_amount = token_balance  
+                .amount  
+                .parse::<f64>()?;  
+                
+            let pool_price = token_amount / sol_amount; // Calculate pool price  
+
+            Ok(pool_price) // Return the calculated pool price  
+        },  
+        Ok(Err(err)) => {  
+            Err(anyhow!("Failed to fetch pool state: {}", err))  
+        },  
+        Err(_) => {  
+            Err(anyhow!("Task failed while fetching pool state."))  
+        },  
+    }  
+} 
