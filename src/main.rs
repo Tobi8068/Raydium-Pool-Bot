@@ -175,7 +175,7 @@ async fn main() -> Result<()> {
                         Ok(current_price) => {
                             println!("Current Price {} SOL", current_price);
                             if current_price > target_price {
-                                is_swap = true;
+                                // is_swap = true;
                             }
                         }
                         Err(e) => eprintln!("Error fetching pool price: {}", e),
@@ -236,8 +236,6 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        } else {
-            // println!("Current pool price is lower than target price");
         }
     }
     Ok(())

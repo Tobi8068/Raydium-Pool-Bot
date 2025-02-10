@@ -655,17 +655,13 @@ pub async fn get_pool_price_clmm(
             panic!("Pool account is None") // Alternatively, you can handle this better  
         }),  
     )?;  
-
-    // Get the balances for the tokens  
-    let sol_balance = blocking_client.get_token_account_balance(&pool_state.token_vault_1)?;  
-    let token_balance = blocking_client.get_token_account_balance(&pool_state.token_vault_0)?;  
-
-    // Convert amounts  
-    let sol_amount = sol_balance.amount.parse::<f64>()?;  
-    let token_amount = token_balance.amount.parse::<f64>()?;  
     
     // Calculate pool price  
-    let pool_price = token_amount / sol_amount;  
+    let sqrt64 = pool_state.sqrt_price_x64 as u128;
+    let mint_decimals_0 = pool_state.mint_decimals_0 as i32;
+    let mint_decimals_1 = pool_state.mint_decimals_1 as i32;
+    let sqrt_price = sqrt64 as f64 / (1u128 << 64) as f64;
+    let pool_price = 1.0 / (sqrt_price * sqrt_price) / 10_f64.powi(mint_decimals_0 - mint_decimals_1);  
 
     Ok(pool_price) // Return the calculated pool price  
 }
