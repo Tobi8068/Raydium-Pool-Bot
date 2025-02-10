@@ -632,3 +632,40 @@ pub fn amount_with_slippage(amount: u64, slippage: f64, round_up: bool) -> u64 {
         (amount as f64).mul(1_f64 - slippage).floor() as u64
     }
 }
+
+pub async fn get_pool_price_clmm(  
+    pool_id: Option<&str>,  
+    blocking_client: Arc<RpcClient>,  
+) -> Result<f64> {  
+    let pool_pubkey = Pubkey::from_str(pool_id.ok_or_else(|| anyhow!("Pool ID is required"))?)?;  
+
+    // Load accounts needed for the pool state  
+    let load_accounts = vec![  
+        pool_pubkey.clone(),  
+    ];  
+
+    // Fetch the accounts  
+    let rsps = blocking_client.get_multiple_accounts(&load_accounts)?;  
+    let [pool_account] =  
+        array_ref![rsps, 0, 1];  
+
+    // Deserialize the pool state  
+    let pool_state = deserialize_anchor_account::<raydium_amm_v3::states::PoolState>(  
+        pool_account.as_ref().unwrap_or_else(|| {  
+            panic!("Pool account is None") // Alternatively, you can handle this better  
+        }),  
+    )?;  
+
+    // Get the balances for the tokens  
+    let sol_balance = blocking_client.get_token_account_balance(&pool_state.token_vault_1)?;  
+    let token_balance = blocking_client.get_token_account_balance(&pool_state.token_vault_0)?;  
+
+    // Convert amounts  
+    let sol_amount = sol_balance.amount.parse::<f64>()?;  
+    let token_amount = token_balance.amount.parse::<f64>()?;  
+    
+    // Calculate pool price  
+    let pool_price = token_amount / sol_amount;  
+
+    Ok(pool_price) // Return the calculated pool price  
+}

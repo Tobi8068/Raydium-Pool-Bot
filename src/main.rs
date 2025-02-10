@@ -6,7 +6,7 @@ use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
-    signer::{keypair::{self, Keypair}, Signer},
+    signer::{keypair::Keypair, Signer},
 };
 use spl_associated_token_account::get_associated_token_address;
 use std::env;
@@ -17,7 +17,7 @@ use tracing::{error, info};
 mod swap_functions;
 use swap_functions::swap_amm::*;
 use swap_functions::swap_cpmm::*;
-use swap_functions::swap_clmm::swap_clmm;
+use swap_functions::swap_clmm::*;
 
 mod jito;
 
@@ -183,7 +183,15 @@ async fn main() -> Result<()> {
                 }
                 PoolType::CLMM => {
                     println!("Get Pool Price CLMM ...");
-                    is_swap = true;
+                    match get_pool_price_clmm(Some(&pool_id), rpc_client.clone()).await {
+                        Ok(current_price) => {
+                            println!("Current Price {} SOL", current_price);
+                            if current_price > target_price {
+                                is_swap = true;
+                            }
+                        }
+                        Err(e) => eprintln!("Error fetching pool price: {}", e),
+                    }
                 }
             }
             if is_swap {
