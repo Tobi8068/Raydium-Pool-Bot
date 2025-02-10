@@ -195,6 +195,8 @@ async fn main() -> Result<()> {
                 }
             }
             if is_swap {
+                let mut slippage_tolerance: u64 = 30; // Initial slippage tolerance (e.g., 30 = 0.3%)
+                let max_slippage: u64 = 90; // Maximum slippage tolerance we'll allow
                 match swap(
                     Some(&pool_id),
                     wallet.insecure_clone(),
@@ -202,7 +204,7 @@ async fn main() -> Result<()> {
                     swap_amount,
                     SwapDirection::Sell,
                     SwapInType::Pct,
-                    30,
+                    slippage_tolerance,
                     use_jito,
                     pool_type.clone(),
                 )
@@ -232,7 +234,23 @@ async fn main() -> Result<()> {
                         }
                     }
                     Err(e) => {
-                        error!("Failed to initiate swap: {}", e);
+                        error!("Failed to swap: {}", e);
+                        if e.to_string().contains("Slippage tolerance exceeded") {
+                            // Increase slippage tolerance
+                            slippage_tolerance += 10; // Increase by a fixed amount (e.g., 10 = 0.1%)
+                            println!("Increasing slippage tolerance to: {}", slippage_tolerance);
+
+                            if slippage_tolerance > max_slippage {
+                                error!("Max slippage tolerance reached.  Aborting swap.");
+                                break; // Exit the retry loop
+                            }
+                            // Optionally add a delay before retrying
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                        } else {
+                            // It's a different error, not slippage.  Don't retry.
+                            break; // Exit the retry loop
+                        }
                     }
                 }
             }

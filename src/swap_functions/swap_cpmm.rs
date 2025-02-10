@@ -26,7 +26,7 @@ pub async fn swap_cpmm(
     pool_id: Option<&str>,
     keypair: Keypair,
     mint_str: &str,
-    _slippage: u64,
+    slippage: u64,
     use_jito: bool,
     blocking_client: Arc<RpcClient>,
     nonblocking_client: Arc<NonblockingRpcClient>,
@@ -127,7 +127,7 @@ pub async fn swap_cpmm(
                         token_0_vault_info.base.amount,
                         token_1_vault_info.base.amount,
                     );
-                    let amount_out_less_fee = swap_calculate(&blocking_client, pool_pubkey, token_ata.clone(), amount_raw, 30, true)?.other_amount_threshold;
+                    let amount_out_less_fee = swap_calculate(&blocking_client, pool_pubkey, token_ata.clone(), amount_raw, slippage, true)?.other_amount_threshold;
                     let (
                         trade_direction,
                         total_input_token_amount,
