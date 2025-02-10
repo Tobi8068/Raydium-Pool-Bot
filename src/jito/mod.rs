@@ -20,6 +20,7 @@ pub mod ws;
 pub static TIPS_PERCENTILE: LazyLock<RwLock<Option<TipPercentileData>>> =
     LazyLock::new(|| RwLock::new(None));
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct TipPercentileData {
     pub time: String,

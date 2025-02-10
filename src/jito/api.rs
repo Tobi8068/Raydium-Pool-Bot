@@ -14,6 +14,7 @@ struct RpcRequest {
     params: Vec<()>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct RpcResponse {
     pub jsonrpc: String,
