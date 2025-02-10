@@ -13,7 +13,6 @@ use solana_sdk::{
     instruction::Instruction,
     program_pack::Pack,
     pubkey::Pubkey,
-    signature::Signature,
     signer::{keypair::Keypair, Signer},
     system_instruction,
 };
@@ -878,38 +877,8 @@ async fn main() -> Result<()> {
             )
             .await
             {
-                Ok(signatures) => {
-                    println!("Swap initiated. Waiting for confirmation...");
-    
-                    // Wait for each transaction to confirm
-                    for signature in signatures {
-                        let sig = Signature::from_str(&signature)?;
-                        if rpc_client.confirm_transaction(&sig)? {
-                            match rpc_client.get_signature_status(&sig) {
-                                Ok(status) => {
-                                    if status.is_none() {
-                                        println!(
-                                            "Swap transaction {} confirmed successfully!",
-                                            signature
-                                        );
-                                    } else {
-                                        error!(
-                                            "Swap transaction {} failed with error: {:?}",
-                                            signature, status
-                                        );
-                                        continue;
-                                    }
-                                }
-                                _ => {
-                                    error!("Failed to get transaction status for {}", signature);
-                                    continue;
-                                }
-                            }
-                        } else {
-                            error!("Failed to confirm transaction {}", signature);
-                            continue;
-                        }
-                    }
+                Ok(_signatures) => {
+                    is_swap = false;
     
                     // Optional: Verify the token balance is now 0
                     let token_ata =
@@ -918,7 +887,6 @@ async fn main() -> Result<()> {
                         Ok(balance) => {
                             if balance.amount == "0" {
                                 println!("Swap completed successfully! Token balance is now 0");
-                                is_swap = false;
                                 break; // Exit the monitoring loop
                             } else {
                                 println!(

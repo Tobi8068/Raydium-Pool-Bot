@@ -288,6 +288,7 @@ pub async fn swap_cpmm(
                     new_signed_and_send(&blocking_client, &keypair_arc.clone(), instructions, use_jito).await
                 },
                 Err(e) => {
+                    println!("CPMM Swap Program Error");
                     return Err(anyhow!("Failed to unpack user input token account: {}", e));
                 }
             }
@@ -296,11 +297,13 @@ pub async fn swap_cpmm(
         Ok(Err(_err)) => {
             // Handle the error from Program::account
             let instructions = Vec::new();
+            println!("CPMM Swap Client Error");
             new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
         }
         Err(_err) => {
             // Handle the error from spawn_blocking
             let instructions = Vec::new();
+            println!("CPMM Swap Join Error");
             new_signed_and_send(&blocking_client, &keypair_arc, instructions, use_jito).await
         }
     }
