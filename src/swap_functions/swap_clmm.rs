@@ -123,10 +123,28 @@ pub async fn swap_clmm(
     let amm_config_state = deserialize_anchor_account::<raydium_amm_v3::states::AmmConfig>(
         amm_config_account.as_ref().unwrap(),
     )?;
-    let token_balance_wallet = blocking_client
-        .get_token_account_balance(&token_ata)?
-        .amount
-        .parse::<u64>()?;
+    let token_account_result = blocking_client.get_account(&token_ata);  
+    let token_balance_wallet = match token_account_result {  
+        Ok(_account_info) => {  
+            // If the account exists, try to get the token balance  
+            let token_balance_result = blocking_client.get_token_account_balance(&token_ata);  
+            
+            match token_balance_result {  
+                Ok(balance) => {  
+                    let parsed_balance = balance.amount.parse::<u64>()  
+                        .context("No tokens available to swap!")?;  
+                    parsed_balance // Return the parsed balance  
+                },  
+                Err(e) => {  
+                    return Err(anyhow::anyhow!("Failed to get token account balance: {}", e));  
+                },  
+            }  
+        },  
+        Err(_) => {  
+            // Handle the case where the account does not exist  
+            return Err(anyhow::anyhow!("Token account does not exist. Token balance may be 0."));  
+        },  
+    };   
     if token_balance_wallet == 0 {
         return Err(anyhow!("No tokens available to swap"));
     }

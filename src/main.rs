@@ -6,9 +6,8 @@ use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
-    signer::{keypair::Keypair, Signer},
+    signer::keypair::Keypair,
 };
-use spl_associated_token_account::get_associated_token_address;
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -135,7 +134,7 @@ async fn main() -> Result<()> {
     let use_jito = true;
 
     let mut is_swap = false;
-    let mut is_stop = false;
+    let is_stop = false;
 
     if use_jito {
         jito::init_tip_accounts()
@@ -175,7 +174,7 @@ async fn main() -> Result<()> {
                         Ok(current_price) => {
                             println!("Current Price {} SOL", current_price);
                             if current_price > target_price {
-                                // is_swap = true;
+                                is_swap = true;
                             }
                         }
                         Err(e) => eprintln!("Error fetching pool price: {}", e),
@@ -211,30 +210,11 @@ async fn main() -> Result<()> {
                 .await
                 {
                     Ok(_signatures) => {
-                        is_stop = false;
-        
-                        // Optional: Verify the token balance is now 0
-                        let token_ata =
-                            get_associated_token_address(&wallet.pubkey(), &Pubkey::from_str(&mint)?);
-                        match rpc_client.get_token_account_balance(&token_ata) {
-                            Ok(balance) => {
-                                if balance.amount == "0" {
-                                    println!("Swap completed successfully! Token balance is now 0");
-                                    break; // Exit the monitoring loop
-                                } else {
-                                    println!(
-                                        "Warning: Token balance is not 0 after swap: {}",
-                                        balance.amount
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to check final token balance: {}", e);
-                            }
-                        }
+                        println!("Swap Finished");
+                        break;
                     }
                     Err(e) => {
-                        error!("Failed to swap: {}", e);
+                        println!("Failed to swap: {}", e);
                         if e.to_string().contains("Slippage tolerance exceeded") {
                             // Increase slippage tolerance
                             slippage_tolerance += 10; // Increase by a fixed amount (e.g., 10 = 0.1%)
@@ -254,6 +234,9 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+        } else {
+            println!("Finished");
+            break;
         }
     }
     Ok(())

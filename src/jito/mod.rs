@@ -100,18 +100,21 @@ pub async fn get_tip_value() -> Result<f64> {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct BundleStatus {
-    pub _bundle_id: String,
+    pub bundle_id: String,
     pub transactions: Vec<String>,
-    pub _slot: u64,
+    pub slot: u64,
     pub confirmation_status: String,
-    pub _err: ErrorStatus,
+    pub err: ErrorStatus,
 }
+
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct ErrorStatus {
     #[serde(rename = "Ok")]
-    pub _ok: Option<()>,
+    pub ok: Option<()>,
 }
 
 pub async fn wait_for_bundle_confirmation<F, Fut>(
