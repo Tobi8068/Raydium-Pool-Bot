@@ -61,10 +61,9 @@ pub async fn swap_cpmm(
                 pool_state.token_1_mint,
                 token_ata.clone(),   
             ];
-
+            
             let sol_balance = blocking_client
-            .get_token_account_balance(&pool_state.token_1_vault)?;
-
+                .get_token_account_balance(&pool_state.token_1_vault)?;
 
             let token_balance = blocking_client
                 .get_token_account_balance(&pool_state.token_0_vault)?;
@@ -73,10 +72,11 @@ pub async fn swap_cpmm(
             let sol_amount = sol_balance
                 .amount
                 .parse::<f64>()?;
-
+            
             let token_amount = token_balance
                 .amount
                 .parse::<f64>()?;
+            
             let pool_price = token_amount / sol_amount;
             let target_price_str =
                 env::var("TARGET_PRICE").context("TARGET_ADDRESS environment variable not set")?;
@@ -87,19 +87,30 @@ pub async fn swap_cpmm(
                 println!("Current price is lower than target price");
                 return Err(anyhow!("Current price is lower than target price"));
             }
-
-            let token_balance = blocking_client
-                .get_token_account_balance(&token_ata)?
-                .amount
-                .parse::<u64>()?;
-            if token_balance == 0 {
-                return Err(anyhow!("No tokens available to swap"));
-            }
+            let token_account_result = blocking_client.get_account(&token_ata);  
+            let token_balance = match token_account_result {  
+                Ok(_account_info) => {  
+                    // If the account exists, try to get the token balance  
+                    let token_balance_result = blocking_client.get_token_account_balance(&token_ata);  
+                    
+                    match token_balance_result {  
+                        Ok(balance) => {  
+                            let parsed_balance = balance.amount.parse::<u64>()  
+                                .context("No tokens available to swap!")?;  
+                            parsed_balance // Return the parsed balance  
+                        },  
+                        Err(e) => {  
+                            return Err(anyhow::anyhow!("Failed to get token account balance: {}", e));  
+                        },  
+                    }  
+                },  
+                Err(_) => {  
+                    // Handle the case where the account does not exist  
+                    return Err(anyhow::anyhow!("No tokens available to swap!"));  
+                },  
+            };   
             // Use the entire token balance
-            let amount_raw = token_balance;
-
-            // Calculate minimum amount out (you may want to adjust this based on your requirements)
-            let _amount_out = amount_raw;
+            let amount_raw: u64 = token_balance;
 
             let rsps = blocking_client.get_multiple_accounts(&load_pubkeys)?;
             let epoch = blocking_client.get_epoch_info().unwrap().epoch;

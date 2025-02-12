@@ -597,13 +597,21 @@ async fn get_account_info_from_address(
         client.clone(),
         ProgramRpcClientSendTransaction,
     ));
-    let account = program_client
-        .get_account(*account)
-        .await
-        .map_err(TokenError::Client)?
-        .ok_or(TokenError::AccountNotFound)
-        .inspect_err(|err| warn!("{} {}: mint {}", account, err, address))?;
+    let account_result = program_client  
+        .get_account(*account)  
+        .await  
+        .map_err(TokenError::Client)?;  
 
+    let account = match account_result {  
+        Some(account_data) => {  
+            // Process account_data as needed  
+            account_data  
+        },  
+        None => {  
+            println!("Token account does not exist. Token balance may be 0.");  
+            return Err(TokenError::AccountNotFound);  
+        }  
+    };
     if account.owner != spl_token::ID {
         return Err(TokenError::AccountInvalidOwner);
     }
