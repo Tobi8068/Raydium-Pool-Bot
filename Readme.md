@@ -59,7 +59,7 @@ JITO_TIP_VALUE=
 
 ## Contributing 🌟  
 
-If you are interested in this repository, feel free to [fork it](https://github.com/yourusername/yourrepository/fork) and give me [a big star! ⭐](https://github.com/tobi8068/Raydium-Pool-Bot/stargazers) Your support is much appreciated and helps improve the project further. 🚀  
+If you are interested in this repository, feel free to [fork it](https://github.com/tobi8068/Raydium-Pool-Bot/fork) and give me [a big star! ⭐](https://github.com/tobi8068/Raydium-Pool-Bot/stargazers) Your support is much appreciated and helps improve the project further. 🚀  
 
 Thank you for considering contributing to this project! 💖
 
